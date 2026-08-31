@@ -63,6 +63,16 @@ _DOC_MIME_TYPES: dict[str, str] = {
 }
 
 
+def _safe_int(val: Any) -> int | None:
+    """Safely convert a value to int or return None."""
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def map_finish_reason(stop_reason: str | None) -> str | None:
     """Map Bedrock stopReason to GenAI semantic convention finish_reason."""
     if stop_reason is None:
@@ -411,7 +421,7 @@ def extract_invoke_model_request(
             pass
 
     # Max tokens
-    max_tokens = (
+    max_tokens = _safe_int(
         body.get("max_tokens")
         or body.get("max_tokens_to_sample")
         or body.get("max_gen_len")
@@ -428,10 +438,7 @@ def extract_invoke_model_request(
         )
     )
     if max_tokens is not None:
-        try:
-            invocation.max_tokens = int(max_tokens)
-        except (ValueError, TypeError):
-            pass
+        invocation.max_tokens = max_tokens
 
     # Stop sequences
     stop_seqs = (
@@ -447,12 +454,9 @@ def extract_invoke_model_request(
         invocation.stop_sequences = [str(s) for s in stop_seqs]
 
     # Seed
-    seed = body.get("seed")
+    seed = _safe_int(body.get("seed"))
     if seed is not None:
-        try:
-            invocation.seed = int(seed)
-        except (ValueError, TypeError):
-            pass
+        invocation.seed = seed
 
     # Tool definitions (e.g. Anthropic format)
     raw_tools = body.get("tools")
@@ -561,18 +565,12 @@ def extract_invoke_model_response(
         headers_lower: dict[str, str] = {
             str(k).lower(): str(v) for k, v in http_headers.items()
         }
-        input_header = headers_lower.get("x-amzn-bedrock-input-token-count")
-        output_header = headers_lower.get("x-amzn-bedrock-output-token-count")
-        if input_header is not None:
-            try:
-                invocation.input_tokens = int(input_header)
-            except (ValueError, TypeError):
-                pass
-        if output_header is not None:
-            try:
-                invocation.output_tokens = int(output_header)
-            except (ValueError, TypeError):
-                pass
+        invocation.input_tokens = _safe_int(
+            headers_lower.get("x-amzn-bedrock-input-token-count")
+        )
+        invocation.output_tokens = _safe_int(
+            headers_lower.get("x-amzn-bedrock-output-token-count")
+        )
 
     body = _parse_body(raw_body_bytes)
     if not _is_dict(body):
@@ -582,48 +580,36 @@ def extract_invoke_model_response(
     usage = body.get("usage")
     if _is_dict(usage):
         if invocation.input_tokens is None:
-            in_tok = usage.get("input_tokens") or usage.get("inputTokens")
-            if in_tok is not None:
-                invocation.input_tokens = int(in_tok)
+            invocation.input_tokens = _safe_int(
+                usage.get("input_tokens") or usage.get("inputTokens")
+            )
         if invocation.output_tokens is None:
-            out_tok = usage.get("output_tokens") or usage.get("outputTokens")
-            if out_tok is not None:
-                invocation.output_tokens = int(out_tok)
-        cache_read = usage.get("cache_read_input_tokens") or usage.get(
-            "cacheReadInputTokens"
+            invocation.output_tokens = _safe_int(
+                usage.get("output_tokens") or usage.get("outputTokens")
+            )
+        invocation.cache_read_input_tokens = _safe_int(
+            usage.get("cache_read_input_tokens")
+            or usage.get("cacheReadInputTokens")
         )
-        if cache_read is not None:
-            invocation.cache_read_input_tokens = int(cache_read)
-        cache_write = usage.get("cache_creation_input_tokens") or usage.get(
-            "cacheWriteInputTokens"
+        invocation.cache_creation_input_tokens = _safe_int(
+            usage.get("cache_creation_input_tokens")
+            or usage.get("cacheWriteInputTokens")
         )
-        if cache_write is not None:
-            invocation.cache_creation_input_tokens = int(cache_write)
 
     if invocation.input_tokens is None and "inputTextTokenCount" in body:
-        try:
-            invocation.input_tokens = int(body["inputTextTokenCount"])
-        except (ValueError, TypeError):
-            pass
+        invocation.input_tokens = _safe_int(body.get("inputTextTokenCount"))
 
     results = body.get("results")
     if _is_list(results) and results and _is_dict(results[0]):
-        if invocation.output_tokens is None and "tokenCount" in results[0]:
-            try:
-                invocation.output_tokens = int(results[0]["tokenCount"])
-            except (ValueError, TypeError):
-                pass
+        if invocation.output_tokens is None:
+            invocation.output_tokens = _safe_int(results[0].get("tokenCount"))
 
     if invocation.input_tokens is None and "prompt_token_count" in body:
-        try:
-            invocation.input_tokens = int(body["prompt_token_count"])
-        except (ValueError, TypeError):
-            pass
+        invocation.input_tokens = _safe_int(body.get("prompt_token_count"))
     if invocation.output_tokens is None and "generation_token_count" in body:
-        try:
-            invocation.output_tokens = int(body["generation_token_count"])
-        except (ValueError, TypeError):
-            pass
+        invocation.output_tokens = _safe_int(
+            body.get("generation_token_count")
+        )
 
     # 3. Finish reasons
     raw_finish_reason: str | None = None

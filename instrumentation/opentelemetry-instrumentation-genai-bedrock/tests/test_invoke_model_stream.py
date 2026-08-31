@@ -6,17 +6,20 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from opentelemetry.instrumentation.genai.bedrock.patch import _handle_invoke_model
+from opentelemetry.instrumentation.genai.bedrock.patch import (
+    _handle_invoke_model,
+)
 from opentelemetry.instrumentation.genai.bedrock.stream import (
     BedrockInvokeModelStreamWrapper,
 )
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
+)
+from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
 from opentelemetry.trace import StatusCode
@@ -188,9 +191,7 @@ def test_stream_wrapper_titan_with_metrics(
         span.attributes[GenAIAttributes.GEN_AI_OUTPUT_MESSAGES]
     )
     assert len(output_msgs) == 1
-    assert (
-        output_msgs[0]["parts"][0]["content"] == "Here is the response."
-    )
+    assert output_msgs[0]["parts"][0]["content"] == "Here is the response."
 
 
 def test_stream_wrapper_llama_and_mistral(
@@ -363,7 +364,9 @@ def test_handle_invoke_model_streaming_integration(
         }
     ]
     mock_instance = MagicMock()
-    mock_instance.meta.endpoint_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    mock_instance.meta.endpoint_url = (
+        "https://bedrock-runtime.us-east-1.amazonaws.com"
+    )
     mock_wrapped = MagicMock(return_value={"body": events})
 
     api_params = {

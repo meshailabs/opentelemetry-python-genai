@@ -15,11 +15,12 @@ from botocore.stub import Stubber
 
 from opentelemetry.instrumentation.genai.bedrock.extractors import (
     determine_invoke_model_operation_name,
-    extract_invoke_model_request,
     extract_invoke_model_response,
 )
 from opentelemetry.semconv._incubating.attributes import (
     error_attributes as ErrorAttributes,
+)
+from opentelemetry.semconv._incubating.attributes import (
     gen_ai_attributes as GenAIAttributes,
 )
 from opentelemetry.semconv.attributes import (
@@ -247,10 +248,11 @@ def test_invoke_model_titan_text(
     )
 
     with stubber:
-        bedrock_client.invoke_model(
+        response = bedrock_client.invoke_model(
             modelId="amazon.titan-text-express-v1",
             body=json.dumps(request_body),
         )
+        assert response["body"].read() == raw_response_bytes
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
@@ -302,10 +304,11 @@ def test_invoke_model_llama(
     )
 
     with stubber:
-        bedrock_client.invoke_model(
+        response = bedrock_client.invoke_model(
             modelId="meta.llama3-8b-instruct-v1:0",
             body=json.dumps(request_body),
         )
+        assert response["body"].read() == raw_response_bytes
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
@@ -353,10 +356,11 @@ def test_invoke_model_no_content(
     )
 
     with stubber:
-        bedrock_client.invoke_model(
+        response = bedrock_client.invoke_model(
             modelId="anthropic.claude-3-haiku-20240307-v1:0",
             body=json.dumps(request_body),
         )
+        assert response["body"].read() == raw_response_bytes
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
@@ -379,7 +383,10 @@ def test_invoke_model_error(
         "invoke_model",
         service_error_code="ValidationException",
         service_message="Model identifier is invalid",
-        expected_params={"modelId": "invalid-model-id", "body": b'{"prompt": "hi"}'},
+        expected_params={
+            "modelId": "invalid-model-id",
+            "body": b'{"prompt": "hi"}',
+        },
     )
 
     with stubber:
