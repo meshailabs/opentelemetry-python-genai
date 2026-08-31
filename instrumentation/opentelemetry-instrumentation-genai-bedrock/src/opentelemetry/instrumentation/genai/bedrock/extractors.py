@@ -446,8 +446,7 @@ def extract_invoke_model_request(
                 tool_defs.append(
                     GenericToolDefinition(name=name, type=tool["type"])
                 )
-        if tool_defs:
-            invocation.tool_definitions = tool_defs
+        invocation.tool_definitions = tool_defs
 
     if not capture_content:
         return
