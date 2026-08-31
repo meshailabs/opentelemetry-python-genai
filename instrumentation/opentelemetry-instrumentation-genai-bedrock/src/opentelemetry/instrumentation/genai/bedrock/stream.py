@@ -18,7 +18,12 @@ from opentelemetry.util.genai.types import (
     ToolCallRequestPart,
 )
 
-from .extractors import _is_dict, map_finish_reason
+from .extractors import (
+    _is_dict,
+    _is_list,
+    _parse_body,
+    map_finish_reason,
+)
 
 
 class BedrockConverseStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
@@ -162,6 +167,166 @@ class BedrockConverseStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
         self._self_invocation.cache_creation_input_tokens = (
             self._self_cache_creation_input_tokens
         )
+
+        self._self_invocation.stop()
+
+    def _on_stream_error(self, error: BaseException) -> None:
+        self._self_invocation.fail(error)
+
+
+class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
+    """Wrapper for Bedrock invoke_model_with_response_stream EventStream."""
+
+    def __init__(
+        self,
+        stream: EventStream,
+        invocation: InferenceInvocation,
+        *,
+        capture_content: bool = True,
+    ) -> None:
+        super().__init__(stream, invocation=invocation)
+        self._self_invocation = invocation
+        self._self_capture_content = capture_content
+        self._self_role = "assistant"
+        self._self_stop_reason: str | None = None
+        self._self_input_tokens: int | None = None
+        self._self_output_tokens: int | None = None
+        self._self_accumulated_text: list[str] = []
+        self._self_accumulated_reasoning: list[str] = []
+
+    def _process_chunk(self, chunk: dict[str, Any]) -> None:
+        raw_bytes = (
+            chunk.get("chunk", {}).get("bytes")
+            if _is_dict(chunk.get("chunk"))
+            else chunk.get("bytes")
+        )
+        if not raw_bytes:
+            return
+
+        chunk_data = _parse_body(raw_bytes)
+        if not _is_dict(chunk_data):
+            return
+
+        # 1. Check amazon-bedrock-invocationMetrics
+        metrics = chunk_data.get("amazon-bedrock-invocationMetrics")
+        if _is_dict(metrics):
+            if "inputTokenCount" in metrics:
+                try:
+                    self._self_input_tokens = int(metrics["inputTokenCount"])
+                except (ValueError, TypeError):
+                    pass
+            if "outputTokenCount" in metrics:
+                try:
+                    self._self_output_tokens = int(metrics["outputTokenCount"])
+                except (ValueError, TypeError):
+                    pass
+
+        # 2. Anthropic Messages format
+        msg_type = chunk_data.get("type")
+        if msg_type == "message_start":
+            message = chunk_data.get("message", {})
+            if _is_dict(message):
+                if "role" in message:
+                    self._self_role = message["role"]
+                usage = message.get("usage", {})
+                if _is_dict(usage) and "input_tokens" in usage:
+                    try:
+                        self._self_input_tokens = int(usage["input_tokens"])
+                    except (ValueError, TypeError):
+                        pass
+        elif msg_type == "content_block_delta":
+            delta = chunk_data.get("delta", {})
+            if _is_dict(delta):
+                delta_type = delta.get("type")
+                if delta_type == "text_delta" and "text" in delta:
+                    self._self_accumulated_text.append(delta["text"])
+                elif delta_type == "thinking_delta" and "thinking" in delta:
+                    self._self_accumulated_reasoning.append(delta["thinking"])
+                elif "text" in delta:
+                    self._self_accumulated_text.append(delta["text"])
+        elif msg_type == "message_delta":
+            delta = chunk_data.get("delta", {})
+            if _is_dict(delta) and "stop_reason" in delta:
+                self._self_stop_reason = delta["stop_reason"]
+            usage = chunk_data.get("usage", {})
+            if _is_dict(usage) and "output_tokens" in usage:
+                try:
+                    self._self_output_tokens = int(usage["output_tokens"])
+                except (ValueError, TypeError):
+                    pass
+
+        # 3. Legacy Claude / Titan / Llama / Mistral / Cohere stream chunks
+        if "completion" in chunk_data and isinstance(
+            chunk_data["completion"], str
+        ):
+            self._self_accumulated_text.append(chunk_data["completion"])
+            if "stop_reason" in chunk_data:
+                self._self_stop_reason = chunk_data["stop_reason"]
+        elif "outputText" in chunk_data and isinstance(
+            chunk_data["outputText"], str
+        ):
+            self._self_accumulated_text.append(chunk_data["outputText"])
+            if "completionReason" in chunk_data:
+                self._self_stop_reason = chunk_data["completionReason"]
+        elif "generation" in chunk_data and isinstance(
+            chunk_data["generation"], str
+        ):
+            self._self_accumulated_text.append(chunk_data["generation"])
+            if "stop_reason" in chunk_data:
+                self._self_stop_reason = chunk_data["stop_reason"]
+        elif (
+            "outputs" in chunk_data
+            and _is_list(chunk_data["outputs"])
+            and chunk_data["outputs"]
+        ):
+            out = chunk_data["outputs"][0]
+            if _is_dict(out):
+                if "text" in out and isinstance(out["text"], str):
+                    self._self_accumulated_text.append(out["text"])
+                if "stop_reason" in out and isinstance(
+                    out["stop_reason"], str
+                ):
+                    self._self_stop_reason = out["stop_reason"]
+        elif (
+            "text" in chunk_data
+            and isinstance(chunk_data["text"], str)
+            and msg_type is None
+        ):
+            self._self_accumulated_text.append(chunk_data["text"])
+            if chunk_data.get("is_finished"):
+                self._self_stop_reason = "COMPLETE"
+
+    def _on_stream_end(self) -> None:
+        finish_reason = map_finish_reason(self._self_stop_reason)
+        if finish_reason:
+            self._self_invocation.finish_reasons = [finish_reason]
+
+        if self._self_input_tokens is not None:
+            self._self_invocation.input_tokens = self._self_input_tokens
+        if self._self_output_tokens is not None:
+            self._self_invocation.output_tokens = self._self_output_tokens
+
+        if self._self_capture_content:
+            parts: list[MessagePart] = []
+            if self._self_accumulated_reasoning:
+                parts.append(
+                    Reasoning(
+                        content="".join(self._self_accumulated_reasoning)
+                    )
+                )
+            if self._self_accumulated_text:
+                parts.append(
+                    Text(content="".join(self._self_accumulated_text))
+                )
+
+            if parts or finish_reason:
+                self._self_invocation.output_messages = [
+                    OutputMessage(
+                        role=self._self_role,
+                        parts=parts,
+                        finish_reason=finish_reason or "stop",
+                    )
+                ]
 
         self._self_invocation.stop()
 
