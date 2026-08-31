@@ -73,6 +73,16 @@ def _safe_int(val: Any) -> int | None:
         return None
 
 
+def _safe_float(val: Any) -> float | None:
+    """Safely convert a value to float or return None."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def map_finish_reason(stop_reason: str | None) -> str | None:
     """Map Bedrock stopReason to GenAI semantic convention finish_reason."""
     if stop_reason is None:
@@ -180,7 +190,7 @@ def extract_converse_request(
     add_fields = kwargs.get("additionalModelRequestFields")
     if _is_dict(add_fields):
         add_inf = add_fields.get("inferenceConfig")
-        top_k = (
+        invocation.top_k = (
             add_fields.get("topK")
             or add_fields.get("top_k")
             or (
@@ -188,11 +198,9 @@ def extract_converse_request(
                 if _is_dict(add_inf)
                 else None
             )
+            or invocation.top_k
         )
-        if top_k is not None:
-            invocation.top_k = top_k
-        if "seed" in add_fields:
-            invocation.seed = add_fields["seed"]
+        invocation.seed = add_fields.get("seed", invocation.seed)
 
     # system instruction
     raw_system = kwargs.get("system")
@@ -339,7 +347,7 @@ def extract_invoke_model_request(
         return
 
     # Temperature
-    temp = (
+    invocation.temperature = _safe_float(
         body.get("temperature")
         or (
             body.get("textGenerationConfig", {}).get("temperature")
@@ -352,14 +360,9 @@ def extract_invoke_model_request(
             else None
         )
     )
-    if temp is not None:
-        try:
-            invocation.temperature = float(temp)
-        except (ValueError, TypeError):
-            pass
 
     # Top P
-    top_p = (
+    invocation.top_p = _safe_float(
         body.get("top_p")
         or body.get("topP")
         or body.get("p")
@@ -374,14 +377,9 @@ def extract_invoke_model_request(
             else None
         )
     )
-    if top_p is not None:
-        try:
-            invocation.top_p = float(top_p)
-        except (ValueError, TypeError):
-            pass
 
     # Top K
-    top_k = (
+    invocation.top_k = _safe_float(
         body.get("top_k")
         or body.get("topK")
         or body.get("k")
@@ -391,14 +389,9 @@ def extract_invoke_model_request(
             else None
         )
     )
-    if top_k is not None:
-        try:
-            invocation.top_k = float(top_k)
-        except (ValueError, TypeError):
-            pass
 
     # Max tokens
-    max_tokens = _safe_int(
+    invocation.max_tokens = _safe_int(
         body.get("max_tokens")
         or body.get("max_tokens_to_sample")
         or body.get("max_gen_len")
@@ -414,8 +407,6 @@ def extract_invoke_model_request(
             else None
         )
     )
-    if max_tokens is not None:
-        invocation.max_tokens = max_tokens
 
     # Stop sequences
     stop_seqs = (
@@ -431,9 +422,7 @@ def extract_invoke_model_request(
         invocation.stop_sequences = [str(s) for s in stop_seqs]
 
     # Seed
-    seed = _safe_int(body.get("seed"))
-    if seed is not None:
-        invocation.seed = seed
+    invocation.seed = _safe_int(body.get("seed"))
 
     # Tool definitions (e.g. Anthropic format)
     raw_tools = body.get("tools")
