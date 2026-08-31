@@ -304,36 +304,13 @@ def extract_converse_response(
 
 
 def _parse_body(body: Any) -> dict[str, Any] | None:
-    """Safely parse body as a dictionary."""
+    """Safely parse body into a dictionary."""
     if _is_dict(body):
         return body
-    if isinstance(body, (bytes, bytearray)):
+    if isinstance(body, (str, bytes, bytearray)):
         try:
-            parsed: object = json.loads(body.decode("utf-8"))
-            if _is_dict(parsed):
-                return parsed
-        except Exception:
-            return None
-    elif isinstance(body, str):
-        try:
-            parsed = json.loads(body)
-            if _is_dict(parsed):
-                return parsed
-        except Exception:
-            return None
-    elif hasattr(body, "read"):
-        try:
-            content: object = body.read()
-            if hasattr(body, "seek"):
-                body.seek(0)
-            if isinstance(content, (bytes, bytearray)):
-                parsed = json.loads(content.decode("utf-8"))
-                if _is_dict(parsed):
-                    return parsed
-            elif isinstance(content, str):
-                parsed = json.loads(content)
-                if _is_dict(parsed):
-                    return parsed
+            parsed: object = json.loads(body)
+            return parsed if _is_dict(parsed) else None
         except Exception:
             return None
     return None
