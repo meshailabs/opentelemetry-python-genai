@@ -15,17 +15,19 @@ LangGraph application:
   and ``on_resume`` on the handlers registered in the run's callback manager,
   passing the real ``Interrupt`` objects and the checkpoint id the graph
   paused at or resumed from.
-* ``StateGraph.compile(checkpointer=...)``. The checkpointer instance is
-  wrapped so that every ``put``/``aput`` (LangGraph writes one checkpoint per
-  superstep) reports the id it persisted.
+* ``StateGraph.compile(checkpointer=...)``. The checkpointer the compiled graph
+  retains is wrapped so that every ``put``/``aput`` (LangGraph writes one
+  checkpoint per superstep) reports the id it persisted.
 """
 
 from __future__ import annotations
 
+import logging
+import threading
+import weakref
 from collections.abc import Callable
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol
-from weakref import WeakSet
+from weakref import WeakKeyDictionary
 
 from langchain_core.runnables import RunnableConfig
 from wrapt import wrap_function_wrapper
@@ -51,6 +53,8 @@ __all__ = [
     "uninstrument_checkpointers",
 ]
 
+_logger = logging.getLogger(__name__)
+
 # Candidate event names, pending open-telemetry/semantic-conventions-genai#445.
 EVENT_AGENT_PAUSED = "gen_ai.agent.paused"
 EVENT_AGENT_CHECKPOINTED = "gen_ai.agent.checkpointed"
@@ -63,23 +67,24 @@ ATTR_CHECKPOINT_ID = "gen_ai.agent.checkpoint.id"
 ATTR_RESUMED_FROM_TYPE = "gen_ai.agent.resumed_from.type"
 ATTR_RESUMED_FROM_ID = "gen_ai.agent.resumed_from.id"
 
-# Only the ``checkpoint`` member of ``gen_ai.agent.resumed_from.type`` is
-# observable in LangGraph: the resume payload LangGraph reports is always a
-# checkpoint id, never a pause id.
+# LangGraph's resume event supplies a checkpoint id and nothing else, so this is
+# the only member of ``gen_ai.agent.resumed_from.type`` the library determines.
 RESUMED_FROM_TYPE_CHECKPOINT = "checkpoint"
 
-_WRAPPED_MARKER = "_otel_genai_lifecycle_wrapped"
+_WRAPPED_METHODS = ("put", "aput")
+_MISSING = object()
 
-# Savers are free to implement ``aput`` by delegating to ``put`` (LangGraph's
-# own ``InMemorySaver`` does), which would report the same checkpoint twice.
-# Only the outermost wrapped call reports.
-_in_checkpoint_write: ContextVar[bool] = ContextVar(
-    "otel_genai_in_checkpoint_write", default=False
+# Upper bound on the LangGraph namespaces whose last checkpoint id is
+# remembered for de-duplication.
+_MAX_TRACKED_NAMESPACES = 1024
+
+# Checkpointer instances patched by this instrumentation, mapped to the
+# instance attributes they had before patching, so ``uninstrument`` restores
+# rather than deletes.
+_wrapped_checkpointers: WeakKeyDictionary[Any, dict[str, Any]] = (
+    WeakKeyDictionary()
 )
-
-# Checkpointer instances patched by this instrumentation, so that
-# ``uninstrument`` can restore them.
-_wrapped_checkpointers: WeakSet[Any] = WeakSet()
+_wrapped_lock = threading.Lock()
 
 
 class _Reporter(Protocol):
@@ -88,15 +93,19 @@ class _Reporter(Protocol):
     ) -> None: ...
 
 
-def _configurable_value(config: RunnableConfig | None, key: str) -> str | None:
+def _configurable_value(
+    config: RunnableConfig | None, key: str, default: str | None = None
+) -> str | None:
     """Return one ``configurable`` value from a runnable config."""
     if not config:
-        return None
+        return default
     configurable = config.get("configurable")
     if not configurable:
-        return None
+        return default
     value = configurable.get(key)
-    return str(value) if value else None
+    if value is None:
+        return default
+    return str(value)
 
 
 def _config_arg(
@@ -108,16 +117,57 @@ def _config_arg(
     return args[0] if args else None
 
 
-def _report(
-    reporter: _Reporter,
-    config: RunnableConfig | None,
-    returned_config: RunnableConfig | None,
-) -> None:
-    """Report the checkpoint a ``put``/``aput`` call persisted."""
-    thread_id = _configurable_value(config, "thread_id")
-    checkpoint_id = _configurable_value(returned_config, "checkpoint_id")
-    if thread_id and checkpoint_id:
-        reporter.checkpoint_written(thread_id, checkpoint_id)
+class _CheckpointReporter:
+    """Report each persisted checkpoint exactly once.
+
+    A saver may implement ``aput`` by delegating to ``put`` (LangGraph's own
+    ``InMemorySaver`` does), and the delegated call may even run on a worker
+    thread, so nesting cannot be detected from the call context. Instead the
+    last checkpoint id reported for a LangGraph namespace is remembered, and a
+    repeat of that id is dropped. Checkpoint ids are unique per write, so a
+    repeat only ever means the same write was seen twice.
+    """
+
+    def __init__(self, reporter: _Reporter) -> None:
+        self._reporter = reporter
+        self._last_reported: dict[tuple[str, str], str] = {}
+        self._lock = threading.Lock()
+
+    def report(
+        self,
+        config: RunnableConfig | None,
+        returned_config: RunnableConfig | None,
+    ) -> None:
+        thread_id = _configurable_value(config, "thread_id")
+        checkpoint_id = _configurable_value(returned_config, "checkpoint_id")
+        if not thread_id or not checkpoint_id:
+            return
+        namespace = _configurable_value(config, "checkpoint_ns", "") or ""
+
+        key = (thread_id, namespace)
+        with self._lock:
+            if self._last_reported.get(key) == checkpoint_id:
+                return
+            self._last_reported[key] = checkpoint_id
+            overflow = len(self._last_reported) - _MAX_TRACKED_NAMESPACES
+            for stale_key in list(self._last_reported)[:overflow]:
+                del self._last_reported[stale_key]
+
+        self._reporter.checkpoint_written(thread_id, checkpoint_id)
+
+
+def _supports_tracking(checkpointer: Any) -> bool:
+    """Return whether the saver can be tracked for later restoration.
+
+    Checked before anything is patched: a saver that cannot be put in the
+    registry must not be patched either, or uninstrument could never undo it.
+    """
+    try:
+        hash(checkpointer)
+        weakref.ref(checkpointer)
+    except TypeError:
+        return False
+    return True
 
 
 def _wrap_checkpointer(checkpointer: Any, reporter: _Reporter) -> None:
@@ -128,57 +178,80 @@ def _wrap_checkpointer(checkpointer: Any, reporter: _Reporter) -> None:
     instead, which also keeps the patch scoped to savers an instrumented
     application actually compiled a graph with.
     """
-    if getattr(checkpointer, _WRAPPED_MARKER, False):
+    # Checked before the registry is touched: an unhashable or
+    # non-weak-referenceable saver cannot even be looked up there.
+    if not _supports_tracking(checkpointer):
+        _logger.debug(
+            "Checkpointer %r cannot be tracked for uninstrument, "
+            "skipping checkpoint events for it",
+            type(checkpointer).__name__,
+        )
         return
 
-    def sync_put(
-        wrapped: Callable[..., Any],
-        _instance: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> Any:
-        if _in_checkpoint_write.get():
-            return wrapped(*args, **kwargs)
-        token = _in_checkpoint_write.set(True)
-        try:
+    with _wrapped_lock:
+        if checkpointer in _wrapped_checkpointers:
+            return
+
+        checkpoint_reporter = _CheckpointReporter(reporter)
+
+        def sync_put(
+            wrapped: Callable[..., Any],
+            _instance: Any,
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> Any:
             result = wrapped(*args, **kwargs)
-        finally:
-            _in_checkpoint_write.reset(token)
-        _report(reporter, _config_arg(args, kwargs), result)
-        return result
+            checkpoint_reporter.report(_config_arg(args, kwargs), result)
+            return result
 
-    async def async_put(
-        wrapped: Callable[..., Any],
-        _instance: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> Any:
-        if _in_checkpoint_write.get():
-            return await wrapped(*args, **kwargs)
-        token = _in_checkpoint_write.set(True)
-        try:
+        async def async_put(
+            wrapped: Callable[..., Any],
+            _instance: Any,
+            args: tuple[Any, ...],
+            kwargs: dict[str, Any],
+        ) -> Any:
             result = await wrapped(*args, **kwargs)
-        finally:
-            _in_checkpoint_write.reset(token)
-        _report(reporter, _config_arg(args, kwargs), result)
-        return result
+            checkpoint_reporter.report(_config_arg(args, kwargs), result)
+            return result
 
-    patched = False
-    for name, wrapper in (("put", sync_put), ("aput", async_put)):
-        if getattr(checkpointer, name, None) is None:
-            continue
-        try:
-            wrap_function_wrapper(checkpointer, name, wrapper)
-        except (AttributeError, TypeError):  # pragma: no cover - exotic saver
-            continue
-        patched = True
+        # Remember the pre-patch instance attributes so uninstrument restores
+        # a saver that legitimately supplied ``put`` or ``aput`` per instance.
+        instance_dict: dict[str, Any] = getattr(checkpointer, "__dict__", {})
+        previous: dict[str, Any] = {
+            name: instance_dict.get(name, _MISSING)
+            for name in _WRAPPED_METHODS
+        }
 
-    if patched:
-        try:
-            setattr(checkpointer, _WRAPPED_MARKER, True)
-        except (AttributeError, TypeError):  # pragma: no cover - exotic saver
-            pass
-        _wrapped_checkpointers.add(checkpointer)
+        patched: list[str] = []
+        for name, wrapper in (("put", sync_put), ("aput", async_put)):
+            if getattr(checkpointer, name, None) is None:
+                continue
+            try:
+                wrap_function_wrapper(checkpointer, name, wrapper)
+            except (AttributeError, TypeError):  # pragma: no cover
+                continue
+            patched.append(name)
+
+        if not patched:
+            return
+        _wrapped_checkpointers[checkpointer] = {
+            name: previous[name] for name in patched
+        }
+
+
+def _restore_checkpointer(checkpointer: Any, previous: dict[str, Any]) -> None:
+    """Undo one instance patch, restoring any pre-existing attribute."""
+    for name, original in previous.items():
+        unwrap(checkpointer, name)
+        instance_dict: dict[str, Any] | None = getattr(
+            checkpointer, "__dict__", None
+        )
+        if instance_dict is None:
+            continue
+        if original is _MISSING:
+            instance_dict.pop(name, None)
+        else:
+            instance_dict[name] = original
 
 
 class _CompileWrapper:
@@ -195,7 +268,11 @@ class _CompileWrapper:
         kwargs: dict[str, Any],
     ) -> Any:
         compiled = wrapped(*args, **kwargs)
-        checkpointer = kwargs.get("checkpointer")
+        # Prefer the saver the compiled graph actually retains, so the patch
+        # follows what LangGraph will call rather than what was passed in.
+        checkpointer = getattr(compiled, "checkpointer", None)
+        if checkpointer is None:
+            checkpointer = kwargs.get("checkpointer")
         if checkpointer is None and args:
             checkpointer = args[0]
         # ``checkpointer`` is also allowed to be ``None`` or a bool (a subgraph
@@ -224,16 +301,14 @@ def uninstrument_checkpointers() -> None:
     """Undo ``instrument_checkpointers`` and restore patched savers."""
     try:
         unwrap("langgraph.graph.state.StateGraph", "compile")
-    except (ImportError, AttributeError):  # pragma: no cover - langgraph absent
+    except (
+        ImportError,
+        AttributeError,
+    ):  # pragma: no cover - langgraph absent
         pass
 
-    for checkpointer in list(_wrapped_checkpointers):
-        # The instance patch shadows the class method with an instance
-        # attribute, so dropping the attribute restores the original.
-        instance_dict: dict[str, Any] | None = getattr(
-            checkpointer, "__dict__", None
-        )
-        if instance_dict is not None:
-            for name in ("put", "aput", _WRAPPED_MARKER):
-                instance_dict.pop(name, None)
-    _wrapped_checkpointers.clear()
+    with _wrapped_lock:
+        tracked = list(_wrapped_checkpointers.items())
+        _wrapped_checkpointers.clear()
+    for checkpointer, previous in tracked:
+        _restore_checkpointer(checkpointer, previous)

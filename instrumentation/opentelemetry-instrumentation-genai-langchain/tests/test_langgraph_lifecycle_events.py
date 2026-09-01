@@ -230,3 +230,251 @@ def test_uninstrument_restores_the_checkpointer(
 
     assert "put" not in checkpointer.__dict__
     assert "aput" not in checkpointer.__dict__
+
+
+# ---------------------------------------------------------------------------
+# Correlation and checkpointer wrapping
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSaver(InMemorySaver):
+    """Saver that records every checkpoint it actually persists."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.recorded: list[tuple[str, str]] = []
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        result = super().put(config, checkpoint, metadata, new_versions)
+        configurable = result["configurable"]
+        self.recorded.append(
+            (
+                str(config.get("configurable", {}).get("checkpoint_ns", "")),
+                str(configurable["checkpoint_id"]),
+            )
+        )
+        return result
+
+
+def _checkpoint_ids(log_exporter) -> list[str]:
+    return [
+        record.attributes["gen_ai.agent.checkpoint.id"]
+        for record in _events(log_exporter, CHECKPOINTED)
+    ]
+
+
+def test_nested_subgraph_checkpoints_correlate_to_the_owning_workflow(
+    start_instrumentation,
+    log_exporter,
+    span_exporter,
+):
+    class _SubState(TypedDict, total=False):
+        decision: str
+
+    sub_builder = StateGraph(_SubState)
+    sub_builder.add_node(
+        "ask", lambda _state: {"decision": str(interrupt("approve?"))}
+    )
+    sub_builder.add_edge(START, "ask")
+    sub_builder.add_edge("ask", END)
+
+    builder = StateGraph(_State)
+    builder.add_node("prepare", lambda _state: {"value": "prepared"})
+    builder.add_node("child", sub_builder.compile())
+    builder.add_edge(START, "prepare")
+    builder.add_edge("prepare", "child")
+    builder.add_edge("child", END)
+
+    saver = _RecordingSaver()
+    graph = builder.compile(checkpointer=saver)
+    config = {"configurable": {"thread_id": "nested-test"}}
+
+    graph.invoke({"value": "new"}, config=config)
+    first_run_writes = list(saver.recorded)
+    graph.invoke(Command(resume="approved"), config=config)
+
+    # Both the root namespace and the subgraph namespace are exercised.
+    namespaces = {namespace for namespace, _ in saver.recorded}
+    assert "" in namespaces
+    assert any(namespace.startswith("child:") for namespace in namespaces)
+
+    # Every checkpoint LangGraph persisted is reported exactly once, at every
+    # nesting level, and none is invented.
+    assert _checkpoint_ids(log_exporter) == [
+        checkpoint_id for _, checkpoint_id in saver.recorded
+    ]
+
+    # LangGraph creates one workflow run per invoke even with subgraphs, so
+    # each nesting level's checkpoints land on the workflow span of the invoke
+    # that produced them.
+    workflow_spans = _workflow_spans(span_exporter)
+    assert len(workflow_spans) == 2
+    first_ids = {checkpoint_id for _, checkpoint_id in first_run_writes}
+    for record in _events(log_exporter, CHECKPOINTED):
+        expected = (
+            workflow_spans[0]
+            if record.attributes["gen_ai.agent.checkpoint.id"] in first_ids
+            else workflow_spans[1]
+        )
+        assert record.span_id == expected.context.span_id
+        assert record.trace_id == expected.context.trace_id
+
+
+def test_two_unrelated_runs_on_one_thread_id_drop_the_checkpoint(
+    start_instrumentation,
+    log_exporter,
+):
+    from unittest import mock
+    from uuid import uuid4
+
+    from opentelemetry.instrumentation.genai.langchain.callback_handler import (
+        OpenTelemetryLangChainCallbackHandler,
+    )
+    from opentelemetry.util.genai.invocation import WorkflowInvocation
+
+    telemetry = mock.MagicMock()
+    telemetry.should_capture_content.return_value = False
+    telemetry.workflow.side_effect = lambda **_kwargs: mock.MagicMock(
+        spec=WorkflowInvocation
+    )
+    handler = OpenTelemetryLangChainCallbackHandler(telemetry)
+
+    metadata = {"ls_integration": "langgraph", "thread_id": "shared"}
+    workflows = []
+    for _ in range(2):
+        run_id = uuid4()
+        handler.on_chain_start(
+            serialized={"name": "LangGraph"},
+            inputs={},
+            run_id=run_id,
+            metadata=metadata,
+        )
+        workflows.append(handler._invocation_manager.get_invocation(run_id))
+
+    handler.checkpoint_written("shared", "ckpt-1")
+
+    for workflow in workflows:
+        workflow.emit_event.assert_not_called()
+
+
+class _DelegatingSaver(InMemorySaver):
+    """Saver whose ``aput`` delegates to ``put``, like ``InMemorySaver``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.write_count = 0
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        self.write_count += 1
+        return super().put(config, checkpoint, metadata, new_versions)
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        return self.put(config, checkpoint, metadata, new_versions)
+
+
+class _WorkerThreadSaver(_DelegatingSaver):
+    """Saver whose ``aput`` runs ``put`` on a worker thread.
+
+    The worker gets no copy of the caller's context, so de-duplication cannot
+    rely on context propagation.
+    """
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        from concurrent.futures import ThreadPoolExecutor
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return await loop.run_in_executor(
+                pool,
+                lambda: self.put(config, checkpoint, metadata, new_versions),
+            )
+
+
+@pytest.mark.parametrize(
+    "saver_factory", [_DelegatingSaver, _WorkerThreadSaver]
+)
+def test_delegating_saver_reports_each_write_once(
+    start_instrumentation,
+    log_exporter,
+    saver_factory,
+):
+    saver = saver_factory()
+    graph = _build_graph().compile(checkpointer=saver)
+    config = {"configurable": {"thread_id": "delegating-test"}}
+
+    asyncio.run(graph.ainvoke({"value": "new"}, config=config))
+
+    checkpoint_ids = _checkpoint_ids(log_exporter)
+    assert saver.write_count == 3
+    assert len(checkpoint_ids) == saver.write_count
+    assert len(set(checkpoint_ids)) == saver.write_count
+
+
+def test_uninstrument_restores_instance_level_put_and_aput(
+    start_instrumentation,
+    log_exporter,
+):
+    saver = InMemorySaver()
+    original_put = saver.put
+    original_aput = saver.aput
+    # A saver that legitimately supplies its write methods per instance.
+    saver.put = original_put
+    saver.aput = original_aput
+
+    graph = _build_graph().compile(checkpointer=saver)
+    graph.invoke({"value": "new"}, config={"configurable": {"thread_id": "i"}})
+    assert _events(log_exporter, CHECKPOINTED)
+
+    start_instrumentation.uninstrument()
+
+    assert saver.__dict__["put"] is original_put
+    assert saver.__dict__["aput"] is original_aput
+
+
+def test_untrackable_saver_is_left_untouched(
+    start_instrumentation,
+    log_exporter,
+):
+    class _UnhashableSaver(InMemorySaver):
+        # Defining __eq__ without __hash__ makes instances unhashable, so the
+        # saver cannot be registered for restoration.
+        def __eq__(self, other: object) -> bool:
+            return self is other
+
+    saver = _UnhashableSaver()
+    graph = _build_graph().compile(checkpointer=saver)
+
+    # Nothing was patched, so nothing is left behind to clean up.
+    assert "put" not in saver.__dict__
+    assert "aput" not in saver.__dict__
+
+    graph.invoke({"value": "new"}, config={"configurable": {"thread_id": "n"}})
+
+    assert _events(log_exporter, CHECKPOINTED) == []
+
+
+def test_checkpointer_is_discovered_from_the_compiled_graph(
+    start_instrumentation,
+    log_exporter,
+):
+    keyword_saver = InMemorySaver()
+    keyword_graph = _build_graph().compile(checkpointer=keyword_saver)
+    positional_saver = InMemorySaver()
+    positional_graph = _build_graph().compile(positional_saver)
+
+    # The saver the compiled graph retains is the one that was patched.
+    assert keyword_graph.checkpointer is keyword_saver
+    assert positional_graph.checkpointer is positional_saver
+    assert "put" in keyword_saver.__dict__
+    assert "put" in positional_saver.__dict__
+
+    keyword_graph.invoke(
+        {"value": "new"}, config={"configurable": {"thread_id": "kw"}}
+    )
+    keyword_checkpoints = len(_checkpoint_ids(log_exporter))
+    positional_graph.invoke(
+        {"value": "new"}, config={"configurable": {"thread_id": "pos"}}
+    )
+
+    assert keyword_checkpoints == 3
+    assert len(_checkpoint_ids(log_exporter)) == 6
