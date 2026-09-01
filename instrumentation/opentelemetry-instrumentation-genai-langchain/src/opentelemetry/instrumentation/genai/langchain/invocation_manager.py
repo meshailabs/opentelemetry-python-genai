@@ -1,6 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
+import threading
 from dataclasses import dataclass, field
 from uuid import UUID
 
@@ -24,6 +25,32 @@ class _InvocationManager:
         # Map from run_id -> _InvocationState, to keep track of invocations and parent/child relationships
         # TODO: TTL cache to avoid memory leaks in long-running processes.
         self._invocations: dict[UUID, _InvocationState] = {}
+        # Map from LangGraph thread id -> run_id of the live graph run on that
+        # thread. A checkpointer call carries no callback run id, so the thread
+        # id in its config is the only handle back to the running invocation.
+        self._threads: dict[str, UUID] = {}
+        self._threads_lock = threading.Lock()
+
+    def bind_thread(self, thread_id: str, run_id: UUID) -> None:
+        """Record which run currently owns a LangGraph thread id.
+
+        LangGraph serializes runs on a thread id, so at most one run should own
+        one at a time. If an application still starts two, the later run wins
+        and the earlier one stops receiving checkpoint events.
+        """
+        with self._threads_lock:
+            self._threads[thread_id] = run_id
+
+    def unbind_thread(self, run_id: UUID) -> None:
+        with self._threads_lock:
+            for thread_id, owner in list(self._threads.items()):
+                if owner == run_id:
+                    del self._threads[thread_id]
+
+    def get_thread_invocation(self, thread_id: str) -> GenAIInvocation | None:
+        with self._threads_lock:
+            run_id = self._threads.get(thread_id)
+        return self.get_invocation(run_id) if run_id is not None else None
 
     def add_invocation_state(
         self,

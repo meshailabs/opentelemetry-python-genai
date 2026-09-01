@@ -1,0 +1,112 @@
+{
+  "description": "Telemetry captured by opentelemetry-instrumentation-genai-langchain from an unmodified LangGraph human-in-the-loop application: one invoke that interrupts, one that resumes.",
+  "langgraph_ground_truth": {
+    "interrupts_returned_by_invoke": [
+      {
+        "id": "28d7d9ddab385fae2c5fa794d87bc0d7",
+        "value": {
+          "question": "approve expense?",
+          "amount": 250
+        }
+      }
+    ],
+    "final_state": {
+      "amount": 250,
+      "approval": "approved",
+      "status": "submitted"
+    }
+  },
+  "spans": [
+    {
+      "name": "invoke_workflow LangGraph",
+      "trace_id": "8370e165c91eb6094e0d78491ec2d2ad",
+      "span_id": "da24f4a5c1ac62e7",
+      "parent_span_id": null,
+      "kind": "SpanKind.INTERNAL",
+      "attributes": {
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": "LangGraph",
+        "gen_ai.conversation.id": "expense-4711"
+      }
+    },
+    {
+      "name": "invoke_workflow LangGraph",
+      "trace_id": "535368aa545f70747af64eaa5ccaa567",
+      "span_id": "368a6dac86708c3c",
+      "parent_span_id": null,
+      "kind": "SpanKind.INTERNAL",
+      "attributes": {
+        "gen_ai.operation.name": "invoke_workflow",
+        "gen_ai.workflow.name": "LangGraph",
+        "gen_ai.conversation.id": "expense-4711"
+      }
+    }
+  ],
+  "logs": [
+    {
+      "event_name": "gen_ai.agent.checkpointed",
+      "body": "Agent execution checkpointed",
+      "trace_id": "8370e165c91eb6094e0d78491ec2d2ad",
+      "span_id": "da24f4a5c1ac62e7",
+      "attributes": {
+        "gen_ai.agent.checkpoint.id": "1f1a6548-903b-6f99-bfff-598620cb043e"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.checkpointed",
+      "body": "Agent execution checkpointed",
+      "trace_id": "8370e165c91eb6094e0d78491ec2d2ad",
+      "span_id": "da24f4a5c1ac62e7",
+      "attributes": {
+        "gen_ai.agent.checkpoint.id": "1f1a6548-903d-6992-8000-c0fb37396a52"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.checkpointed",
+      "body": "Agent execution checkpointed",
+      "trace_id": "8370e165c91eb6094e0d78491ec2d2ad",
+      "span_id": "da24f4a5c1ac62e7",
+      "attributes": {
+        "gen_ai.agent.checkpoint.id": "1f1a6548-903f-638a-8001-ee248929f464"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.paused",
+      "body": "Agent execution paused",
+      "trace_id": "8370e165c91eb6094e0d78491ec2d2ad",
+      "span_id": "da24f4a5c1ac62e7",
+      "attributes": {
+        "gen_ai.agent.pause.id": "28d7d9ddab385fae2c5fa794d87bc0d7",
+        "gen_ai.agent.checkpoint.id": "1f1a6548-903f-638a-8001-ee248929f464"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.resumed",
+      "body": "Agent execution resumed",
+      "trace_id": "535368aa545f70747af64eaa5ccaa567",
+      "span_id": "368a6dac86708c3c",
+      "attributes": {
+        "gen_ai.agent.resumed_from.type": "checkpoint",
+        "gen_ai.agent.resumed_from.id": "1f1a6548-903f-638a-8001-ee248929f464"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.checkpointed",
+      "body": "Agent execution checkpointed",
+      "trace_id": "535368aa545f70747af64eaa5ccaa567",
+      "span_id": "368a6dac86708c3c",
+      "attributes": {
+        "gen_ai.agent.checkpoint.id": "1f1a6548-9043-68f2-8002-9e0865e7d458"
+      }
+    },
+    {
+      "event_name": "gen_ai.agent.checkpointed",
+      "body": "Agent execution checkpointed",
+      "trace_id": "535368aa545f70747af64eaa5ccaa567",
+      "span_id": "368a6dac86708c3c",
+      "attributes": {
+        "gen_ai.agent.checkpoint.id": "1f1a6548-9044-6e36-8003-43e0e8b068ae"
+      }
+    }
+  ]
+}
