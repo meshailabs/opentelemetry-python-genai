@@ -19,6 +19,7 @@ from opentelemetry.util.genai.types import (
 )
 
 from .extractors import (
+    _first_not_none,
     _is_dict,
     _is_list,
     _parse_body,
@@ -192,6 +193,8 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
         self._self_stop_reason: str | None = None
         self._self_input_tokens: int | None = None
         self._self_output_tokens: int | None = None
+        self._self_cache_read_input_tokens: int | None = None
+        self._self_cache_creation_input_tokens: int | None = None
         self._self_accumulated_text: list[str] = []
         self._self_accumulated_reasoning: list[str] = []
 
@@ -226,8 +229,34 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                 if "role" in message:
                     self._self_role = message["role"]
                 usage = message.get("usage", {})
-                if _is_dict(usage) and "input_tokens" in usage:
-                    self._self_input_tokens = _safe_int(usage["input_tokens"])
+                if _is_dict(usage):
+                    if "input_tokens" in usage or "inputTokens" in usage:
+                        self._self_input_tokens = _safe_int(
+                            _first_not_none(
+                                usage.get("input_tokens"),
+                                usage.get("inputTokens"),
+                            )
+                        )
+                    if (
+                        "cache_read_input_tokens" in usage
+                        or "cacheReadInputTokens" in usage
+                    ):
+                        self._self_cache_read_input_tokens = _safe_int(
+                            _first_not_none(
+                                usage.get("cache_read_input_tokens"),
+                                usage.get("cacheReadInputTokens"),
+                            )
+                        )
+                    if (
+                        "cache_creation_input_tokens" in usage
+                        or "cacheWriteInputTokens" in usage
+                    ):
+                        self._self_cache_creation_input_tokens = _safe_int(
+                            _first_not_none(
+                                usage.get("cache_creation_input_tokens"),
+                                usage.get("cacheWriteInputTokens"),
+                            )
+                        )
         elif msg_type == "content_block_delta":
             delta = chunk_data.get("delta", {})
             if _is_dict(delta):
@@ -296,6 +325,14 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
             self._self_invocation.input_tokens = self._self_input_tokens
         if self._self_output_tokens is not None:
             self._self_invocation.output_tokens = self._self_output_tokens
+        if self._self_cache_read_input_tokens is not None:
+            self._self_invocation.cache_read_input_tokens = (
+                self._self_cache_read_input_tokens
+            )
+        if self._self_cache_creation_input_tokens is not None:
+            self._self_invocation.cache_creation_input_tokens = (
+                self._self_cache_creation_input_tokens
+            )
 
         if self._self_capture_content:
             parts: list[MessagePart] = []

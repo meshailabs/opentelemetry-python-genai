@@ -385,3 +385,84 @@ def test_handle_invoke_model_streaming_integration(
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == "chat amazon.titan-text-lite-v1"
+
+
+def test_stream_wrapper_anthropic_with_cache_tokens(
+    tracer_provider,
+    span_exporter,
+) -> None:
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    invocation = handler.inference(
+        provider="aws.bedrock",
+        request_model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    )
+    events = [
+        {
+            "chunk": {
+                "bytes": json.dumps(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "role": "assistant",
+                            "usage": {
+                                "input_tokens": 50,
+                                "cache_read_input_tokens": 30,
+                                "cache_creation_input_tokens": 10,
+                            },
+                        },
+                    }
+                ).encode("utf-8")
+            }
+        },
+        {
+            "chunk": {
+                "bytes": json.dumps(
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {
+                            "type": "text_delta",
+                            "text": "Hello world!",
+                        },
+                    }
+                ).encode("utf-8")
+            }
+        },
+        {
+            "chunk": {
+                "bytes": json.dumps(
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn"},
+                        "usage": {"output_tokens": 5},
+                    }
+                ).encode("utf-8")
+            }
+        },
+    ]
+
+    wrapper = BedrockInvokeModelStreamWrapper(
+        stream=events,  # type: ignore[arg-type]
+        invocation=invocation,
+        capture_content=True,
+    )
+    list(wrapper)
+
+    spans = span_exporter.get_finished_spans()
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.attributes[GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS] == 50
+    assert span.attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 5
+    assert (
+        span.attributes[GenAIAttributes.GEN_AI_USAGE_CACHE_READ_INPUT_TOKENS]
+        == 30
+    )
+    assert (
+        span.attributes[
+            GenAIAttributes.GEN_AI_USAGE_CACHE_CREATION_INPUT_TOKENS
+        ]
+        == 10
+    )
+    assert span.attributes[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
+        "stop",
+    )
