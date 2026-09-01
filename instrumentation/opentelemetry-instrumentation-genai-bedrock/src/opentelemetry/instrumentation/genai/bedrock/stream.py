@@ -310,13 +310,13 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
             parts: list[MessagePart] = []
             if self._self_accumulated_reasoning:
                 parts.append(
-                    Reasoning(
+                    ReasoningPart(
                         content="".join(self._self_accumulated_reasoning)
                     )
                 )
             if self._self_accumulated_text:
                 parts.append(
-                    Text(content="".join(self._self_accumulated_text))
+                    TextPart(content="".join(self._self_accumulated_text))
                 )
 
             if parts or finish_reason:
