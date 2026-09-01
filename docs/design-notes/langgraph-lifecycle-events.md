@@ -29,18 +29,26 @@ The interrupt is not observable from `on_chain_end`: LangGraph adds
 
 `paused` and `resumed` use the run id on the lifecycle event, resolved to the
 nearest workflow invocation. A checkpointer call has no run id, so
-`checkpointed` maps the `configurable.thread_id` in its config to a live run.
-Runs are tracked as a stack per thread id: the innermost live run owns the
-checkpoint, and a nested run never displaces the run containing it. If two live
-runs on one thread id are unrelated, ownership is ambiguous and the event is
-dropped rather than guessed.
+`checkpointed` maps the `configurable.thread_id` and `configurable.checkpoint_ns`
+in its config to a live run. Runs are tracked per thread id, each bound with the
+namespace its own checkpoints use ("" for a top level graph, otherwise the run's
+`langgraph_checkpoint_ns`). A write resolves to the run bound with that exact
+namespace, or to the nearest enclosing run when none is. A nested run never
+displaces the run containing it, and when two equally specific live runs are
+unrelated the event is dropped rather than guessed.
+
+LangGraph classifies a subgraph's own graph run as a plain chain, not a
+workflow, so today the child namespace resolves to the parent workflow. The
+resolution is namespace aware regardless, so a nested workflow would own its
+own writes.
 
 `resumed_from.type` is always `checkpoint`. That is a constant in the
 instrumentation, but it is determined by LangGraph, not chosen: the resume event
 supplies a checkpoint id and nothing else.
 
-`GenAIInvocation.emit_event` is byte-identical to the hunk in open PR #507 and
-is dropped when rebasing onto it. It is not a competing API.
+`GenAIInvocation.emit_event` is byte-identical to the hunk in open PR #507,
+saved here as `pr507-emit_event.patch` so the identity is checkable, and is
+dropped when rebasing onto that PR. It is not a competing API.
 
 ## Checkpoint volume
 

@@ -74,10 +74,6 @@ RESUMED_FROM_TYPE_CHECKPOINT = "checkpoint"
 _WRAPPED_METHODS = ("put", "aput")
 _MISSING = object()
 
-# Upper bound on the LangGraph namespaces whose last checkpoint id is
-# remembered for de-duplication.
-_MAX_TRACKED_NAMESPACES = 1024
-
 # Checkpointer instances patched by this instrumentation, mapped to the
 # instance attributes they had before patching, so ``uninstrument`` restores
 # rather than deletes.
@@ -89,7 +85,7 @@ _wrapped_lock = threading.Lock()
 
 class _Reporter(Protocol):
     def checkpoint_written(
-        self, thread_id: str, checkpoint_id: str
+        self, thread_id: str, checkpoint_id: str, namespace: str
     ) -> None: ...
 
 
@@ -117,21 +113,50 @@ def _config_arg(
     return args[0] if args else None
 
 
+def _checkpoint_arg(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    """Return the ``checkpoint`` argument of a ``put``/``aput`` call."""
+    if "checkpoint" in kwargs:
+        return kwargs["checkpoint"]
+    return args[1] if len(args) > 1 else None
+
+
 class _CheckpointReporter:
     """Report each persisted checkpoint exactly once.
 
     A saver may implement ``aput`` by delegating to ``put`` (LangGraph's own
-    ``InMemorySaver`` does), and the delegated call may even run on a worker
-    thread, so nesting cannot be detected from the call context. Instead the
-    last checkpoint id reported for a LangGraph namespace is remembered, and a
-    repeat of that id is dropped. Checkpoint ids are unique per write, so a
-    repeat only ever means the same write was seen twice.
+    ``InMemorySaver`` does ``return self.put(config, checkpoint, metadata,
+    new_versions)``), and the delegated call may run on a worker thread, so
+    nesting cannot be detected from the call context. Instead the identity of
+    the ``Checkpoint`` object being written is held while a write is in
+    flight: a nested call that receives the same object is the delegation and
+    stays silent, and the outermost call reports.
+
+    Known limit: a saver that copies the checkpoint before delegating is not
+    recognised as a delegation, and the write is reported by both calls. Over
+    reporting is preferred to dropping a real checkpoint.
     """
 
     def __init__(self, reporter: _Reporter) -> None:
         self._reporter = reporter
-        self._last_reported: dict[tuple[str, str], str] = {}
+        self._in_flight: set[int] = set()
         self._lock = threading.Lock()
+
+    def claim(self, checkpoint: Any) -> int | None:
+        """Claim a write, or return None if it is a nested delegation."""
+        if checkpoint is None:
+            return None
+        key = id(checkpoint)
+        with self._lock:
+            if key in self._in_flight:
+                return None
+            self._in_flight.add(key)
+        return key
+
+    def release(self, key: int | None) -> None:
+        if key is None:
+            return
+        with self._lock:
+            self._in_flight.discard(key)
 
     def report(
         self,
@@ -143,17 +168,7 @@ class _CheckpointReporter:
         if not thread_id or not checkpoint_id:
             return
         namespace = _configurable_value(config, "checkpoint_ns", "") or ""
-
-        key = (thread_id, namespace)
-        with self._lock:
-            if self._last_reported.get(key) == checkpoint_id:
-                return
-            self._last_reported[key] = checkpoint_id
-            overflow = len(self._last_reported) - _MAX_TRACKED_NAMESPACES
-            for stale_key in list(self._last_reported)[:overflow]:
-                del self._last_reported[stale_key]
-
-        self._reporter.checkpoint_written(thread_id, checkpoint_id)
+        self._reporter.checkpoint_written(thread_id, checkpoint_id, namespace)
 
 
 def _supports_tracking(checkpointer: Any) -> bool:
@@ -200,8 +215,13 @@ def _wrap_checkpointer(checkpointer: Any, reporter: _Reporter) -> None:
             args: tuple[Any, ...],
             kwargs: dict[str, Any],
         ) -> Any:
-            result = wrapped(*args, **kwargs)
-            checkpoint_reporter.report(_config_arg(args, kwargs), result)
+            key = checkpoint_reporter.claim(_checkpoint_arg(args, kwargs))
+            try:
+                result = wrapped(*args, **kwargs)
+            finally:
+                checkpoint_reporter.release(key)
+            if key is not None:
+                checkpoint_reporter.report(_config_arg(args, kwargs), result)
             return result
 
         async def async_put(
@@ -210,8 +230,13 @@ def _wrap_checkpointer(checkpointer: Any, reporter: _Reporter) -> None:
             args: tuple[Any, ...],
             kwargs: dict[str, Any],
         ) -> Any:
-            result = await wrapped(*args, **kwargs)
-            checkpoint_reporter.report(_config_arg(args, kwargs), result)
+            key = checkpoint_reporter.claim(_checkpoint_arg(args, kwargs))
+            try:
+                result = await wrapped(*args, **kwargs)
+            finally:
+                checkpoint_reporter.release(key)
+            if key is not None:
+                checkpoint_reporter.report(_config_arg(args, kwargs), result)
             return result
 
         # Remember the pre-patch instance attributes so uninstrument restores

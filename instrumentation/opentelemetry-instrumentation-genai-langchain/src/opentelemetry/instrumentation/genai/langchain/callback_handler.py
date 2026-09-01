@@ -741,13 +741,18 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             body="Agent execution resumed",
         )
 
-    def checkpoint_written(self, thread_id: str, checkpoint_id: str) -> None:
+    def checkpoint_written(
+        self, thread_id: str, checkpoint_id: str, namespace: str = ""
+    ) -> None:
         """Emit a checkpointed event for one persisted checkpoint.
 
-        Called by the wrapped checkpointer, which has no callback run id, so the
-        live graph run is resolved through the LangGraph thread id.
+        Called by the wrapped checkpointer, which has no callback run id, so
+        the live graph run is resolved through the LangGraph thread id and the
+        checkpoint namespace the write was made under.
         """
-        workflow = self._invocation_manager.get_thread_invocation(thread_id)
+        workflow = self._invocation_manager.get_thread_invocation(
+            thread_id, namespace
+        )
         if not isinstance(workflow, WorkflowInvocation):
             return
 
@@ -763,8 +768,15 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         if not metadata or metadata.get("ls_integration") != "langgraph":
             return
         thread_id = metadata.get("thread_id")
-        if thread_id:
-            self._invocation_manager.bind_thread(str(thread_id), run_id)
+        if not thread_id:
+            return
+        # A top level graph run has no ``langgraph_checkpoint_ns`` and writes
+        # its checkpoints under the root namespace. A nested graph run carries
+        # the namespace its own checkpoints are written under.
+        namespace = metadata.get("langgraph_checkpoint_ns") or ""
+        self._invocation_manager.bind_thread(
+            str(thread_id), run_id, str(namespace)
+        )
 
     def _find_nearest_agent(
         self, run_id: UUID | None

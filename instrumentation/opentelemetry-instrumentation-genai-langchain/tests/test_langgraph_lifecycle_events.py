@@ -11,9 +11,14 @@ own return values.
 from __future__ import annotations
 
 import asyncio
+import threading
 from typing import Any, TypedDict
 
 import pytest
+
+from opentelemetry.instrumentation.genai.langchain.lifecycle import (
+    _wrap_checkpointer,
+)
 
 InMemorySaver = pytest.importorskip(
     "langgraph.checkpoint.memory"
@@ -304,9 +309,10 @@ def test_nested_subgraph_checkpoints_correlate_to_the_owning_workflow(
         checkpoint_id for _, checkpoint_id in saver.recorded
     ]
 
-    # LangGraph creates one workflow run per invoke even with subgraphs, so
-    # each nesting level's checkpoints land on the workflow span of the invoke
-    # that produced them.
+    # LangGraph classifies a subgraph's chain run as a plain chain, not a
+    # workflow, so no child workflow span exists and the child namespace's
+    # checkpoints resolve to the nearest enclosing run: the parent workflow.
+    # Namespace resolution itself is covered in test_invocation_manager.
     workflow_spans = _workflow_spans(span_exporter)
     assert len(workflow_spans) == 2
     first_ids = {checkpoint_id for _, checkpoint_id in first_run_writes}
@@ -478,3 +484,182 @@ def test_checkpointer_is_discovered_from_the_compiled_graph(
 
     assert keyword_checkpoints == 3
     assert len(_checkpoint_ids(log_exporter)) == 6
+
+
+def test_nested_resume_reports_one_event_per_graph_level(
+    start_instrumentation,
+    log_exporter,
+):
+    class _SubState(TypedDict, total=False):
+        decision: str
+
+    sub_builder = StateGraph(_SubState)
+    sub_builder.add_node(
+        "ask", lambda _state: {"decision": str(interrupt("approve?"))}
+    )
+    sub_builder.add_edge(START, "ask")
+    sub_builder.add_edge("ask", END)
+
+    builder = StateGraph(_State)
+    builder.add_node("prepare", lambda _state: {"value": "prepared"})
+    builder.add_node("child", sub_builder.compile())
+    builder.add_edge(START, "prepare")
+    builder.add_edge("prepare", "child")
+    builder.add_edge("child", END)
+
+    saver = _RecordingSaver()
+    graph = builder.compile(checkpointer=saver)
+    config = {"configurable": {"thread_id": "nested-resume"}}
+
+    graph.invoke({"value": "new"}, config=config)
+    persisted = {
+        namespace: checkpoint_id for namespace, checkpoint_id in saver.recorded
+    }
+    graph.invoke(Command(resume="approved"), config=config)
+
+    resumed_ids = [
+        record.attributes["gen_ai.agent.resumed_from.id"]
+        for record in _events(log_exporter, RESUMED)
+    ]
+    # One resumed event per graph level: the root graph and the subgraph.
+    assert len(resumed_ids) == 2
+    assert len(set(resumed_ids)) == 2
+
+    # Provenance: each id is the last checkpoint that level actually persisted.
+    root_namespace = ""
+    child_namespace = next(
+        namespace for namespace in persisted if namespace.startswith("child:")
+    )
+    assert set(resumed_ids) == {
+        persisted[root_namespace],
+        persisted[child_namespace],
+    }
+    assert all(
+        record.attributes["gen_ai.agent.resumed_from.type"] == "checkpoint"
+        for record in _events(log_exporter, RESUMED)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint write de-duplication
+# ---------------------------------------------------------------------------
+
+
+class _StubReporter:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+        self._lock = threading.Lock()
+
+    def checkpoint_written(
+        self, thread_id: str, checkpoint_id: str, namespace: str
+    ) -> None:
+        with self._lock:
+            self.calls.append((thread_id, checkpoint_id, namespace))
+
+
+class _FixedIdSaver:
+    """Minimal saver whose writes always persist the same checkpoint id."""
+
+    def __init__(self, checkpoint_id: str = "fixed-ckpt") -> None:
+        self._checkpoint_id = checkpoint_id
+        self.write_count = 0
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        self.write_count += 1
+        return {
+            "configurable": {
+                "thread_id": config["configurable"]["thread_id"],
+                "checkpoint_ns": config["configurable"].get(
+                    "checkpoint_ns", ""
+                ),
+                "checkpoint_id": self._checkpoint_id,
+            }
+        }
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        # Delegation, passing the same checkpoint object through.
+        return self.put(config, checkpoint, metadata, new_versions)
+
+
+def _fixed_id_config(thread_id: str = "dedup"):
+    return {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+
+
+def test_delegated_write_is_reported_once_by_the_outer_call():
+    saver = _FixedIdSaver()
+    reporter = _StubReporter()
+    _wrap_checkpointer(saver, reporter)
+
+    asyncio.run(saver.aput(_fixed_id_config(), {"id": "a"}, {}, {}))
+
+    assert saver.write_count == 1
+    assert reporter.calls == [("dedup", "fixed-ckpt", "")]
+
+
+def test_separate_writes_reusing_a_checkpoint_id_are_both_reported():
+    saver = _FixedIdSaver()
+    reporter = _StubReporter()
+    _wrap_checkpointer(saver, reporter)
+
+    saver.put(_fixed_id_config(), {"id": "a"}, {}, {})
+    saver.put(_fixed_id_config(), {"id": "b"}, {}, {})
+
+    # Two distinct writes, so two events even though the id is identical.
+    assert saver.write_count == 2
+    assert len(reporter.calls) == 2
+
+
+def test_interleaved_delegated_writes_are_all_reported():
+    saver = _FixedIdSaver()
+    reporter = _StubReporter()
+    _wrap_checkpointer(saver, reporter)
+    started = threading.Barrier(3)
+
+    def write(index: int) -> None:
+        started.wait()
+        asyncio.run(
+            saver.aput(_fixed_id_config(f"t{index}"), {"id": index}, {}, {})
+        )
+
+    threads = [threading.Thread(target=write, args=(i,)) for i in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    # Each concurrent delegated write is reported exactly once, and no write
+    # is dropped as a false duplicate of another in flight write.
+    assert saver.write_count == 3
+    assert len(reporter.calls) == 3
+    assert {thread_id for thread_id, _, _ in reporter.calls} == {
+        "t0",
+        "t1",
+        "t2",
+    }
+
+
+def test_concurrent_writes_through_a_real_delegating_saver(
+    start_instrumentation,
+    log_exporter,
+):
+    saver = _DelegatingSaver()
+    graph = _build_graph().compile(checkpointer=saver)
+    started = threading.Barrier(4)
+
+    def run(index: int) -> None:
+        started.wait()
+        graph.invoke(
+            {"value": "new"},
+            config={"configurable": {"thread_id": f"concurrent-{index}"}},
+        )
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    checkpoint_ids = _checkpoint_ids(log_exporter)
+    assert saver.write_count == 12
+    assert len(checkpoint_ids) == saver.write_count
+    assert len(set(checkpoint_ids)) == saver.write_count
