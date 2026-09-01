@@ -303,7 +303,7 @@ def extract_converse_response(
                 OutputMessage(
                     role=role,
                     parts=parts,
-                    finish_reason=finish_reason or "stop",
+                    finish_reason=finish_reason or "error",
                 )
             ]
 
@@ -626,7 +626,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role=role,
                 parts=parts,
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Amazon Nova format
@@ -649,7 +649,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role=role,
                 parts=nova_parts,
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Anthropic Legacy completion
@@ -658,7 +658,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role="assistant",
                 parts=[TextPart(content=body["completion"])],
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Titan outputText
@@ -672,7 +672,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role="assistant",
                 parts=[TextPart(content=str(results[0]["outputText"]))],
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Llama generation
@@ -681,7 +681,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role="assistant",
                 parts=[TextPart(content=body["generation"])],
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Mistral outputs
@@ -696,7 +696,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role="assistant",
                 parts=[TextPart(content=str(body["outputs"][0]["text"]))],
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # Cohere generations
@@ -711,7 +711,7 @@ def extract_invoke_model_response(
             OutputMessage(
                 role="assistant",
                 parts=[TextPart(content=str(body["generations"][0]["text"]))],
-                finish_reason=finish_reason or "stop",
+                finish_reason=finish_reason or "error",
             )
         ]
     # AI21 completions
@@ -727,6 +727,6 @@ def extract_invoke_model_response(
                 OutputMessage(
                     role="assistant",
                     parts=[TextPart(content=str(data["text"]))],
-                    finish_reason=finish_reason or "stop",
+                    finish_reason=finish_reason or "error",
                 )
             ]

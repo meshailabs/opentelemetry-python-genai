@@ -157,7 +157,7 @@ class BedrockConverseStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                     OutputMessage(
                         role=self._self_role,
                         parts=parts,
-                        finish_reason=finish_reason or "stop",
+                        finish_reason=finish_reason or "error",
                     )
                 ]
         self._self_invocation.input_tokens = self._self_input_tokens
@@ -315,7 +315,7 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                     OutputMessage(
                         role=self._self_role,
                         parts=parts,
-                        finish_reason=finish_reason or "stop",
+                        finish_reason=finish_reason or "error",
                     )
                 ]
 
