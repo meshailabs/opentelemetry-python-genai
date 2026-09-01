@@ -10,17 +10,17 @@ against langgraph 1.2.9 and langchain-core 1.5.0. Captured output:
 
 1. `langgraph.callbacks` lifecycle dispatch. LangGraph 1.2 calls `on_interrupt`
    and `on_resume` on the handlers in a run's callback manager, passing
-   `GraphInterruptEvent` and `GraphResumeEvent`. Those carry the real
-   `Interrupt` objects, the checkpoint id, and the top level run id, so no
-   payload is read and no id is invented. The released instrumentor is already
-   in that handler list: without these two methods LangGraph logs
-   `AttributeError` on every interrupt and resume, so adding them also removes
-   existing log noise.
-2. `StateGraph.compile(checkpointer=...)`. The saver instance is wrapped so
-   every persisted checkpoint reports its id. `BaseCheckpointSaver.put` is
-   abstract and every saver overrides it, so wrapping the base class
-   intercepts nothing, and the instance is patched instead. `aput` often
-   delegates to `put`, so a reentrancy guard keeps one event per write.
+   `GraphInterruptEvent` and `GraphResumeEvent` with the real `Interrupt`
+   objects, the checkpoint id, and the top level run id. The released
+   instrumentor is already in that handler list: without these two methods
+   LangGraph logs `AttributeError` on every interrupt and resume, so adding
+   them also removes existing log noise.
+2. `StateGraph.compile(checkpointer=...)`. The saver the compiled graph retains
+   is wrapped so every persisted checkpoint reports its id.
+   `BaseCheckpointSaver.put` is abstract and every saver overrides it, so the
+   instance is patched rather than the base class. `aput` may delegate to
+   `put`, possibly on a worker thread, so de-duplication remembers the last
+   checkpoint id per namespace instead of relying on context propagation.
 
 The interrupt is not observable from `on_chain_end`: LangGraph adds
 `__interrupt__` to the invoke return value after the callback fires.
@@ -29,27 +29,35 @@ The interrupt is not observable from `on_chain_end`: LangGraph adds
 
 `paused` and `resumed` use the run id on the lifecycle event, resolved to the
 nearest workflow invocation. A checkpointer call has no run id, so
-`checkpointed` maps the `configurable.thread_id` in its config to the live run
-through `_InvocationManager`. LangGraph serializes runs per thread id, so at
-most one run owns one at a time.
+`checkpointed` maps the `configurable.thread_id` in its config to a live run.
+Runs are tracked as a stack per thread id: the innermost live run owns the
+checkpoint, and a nested run never displaces the run containing it. If two live
+runs on one thread id are unrelated, ownership is ambiguous and the event is
+dropped rather than guessed.
+
+`resumed_from.type` is always `checkpoint`. That is a constant in the
+instrumentation, but it is determined by LangGraph, not chosen: the resume event
+supplies a checkpoint id and nothing else.
+
+`GenAIInvocation.emit_event` is byte-identical to the hunk in open PR #507 and
+is dropped when rebasing onto it. It is not a competing API.
 
 ## Checkpoint volume
 
 `put` fires once per superstep. The sample run emits 3 `checkpointed` events for
 the invoke that pauses, 2 for the invoke that resumes. Nested subgraphs
-checkpoint independently and also emit one `resumed` per graph level, which the
-flat event model does not distinguish.
+checkpoint independently, under their own namespace, and emit one `resumed` per
+graph level, which the flat event model does not distinguish.
 
 ## Not demonstrable
 
 `gen_ai.agent.execution.id` is omitted. LangGraph mints no id spanning suspend
-and resume: `thread_id` is a conversation reused across runs, and every other
-id changes on the resuming invoke. The sample shows the two runs as separate
-traces with nothing linking them, which is the gap the attribute describes.
+and resume: `thread_id` is a conversation reused across runs, and every other id
+changes on the resuming invoke. The sample shows the two runs as separate traces
+with nothing linking them, which is the gap the attribute describes.
 
 `gen_ai.agent.pause.reason` is omitted. `interrupt(value)` carries an opaque
-application payload and nothing that says who resolves the pause, so neither
-`human_input` nor `external_system` is derivable.
-
-`gen_ai.agent.resumed_from.type` is always `checkpoint`. The resume payload
-LangGraph reports is a checkpoint id, never a pause id.
+application payload and nothing saying who resolves the pause, so neither
+`human_input` nor `external_system` is derivable. The `pause` member of
+`resumed_from.type` is likewise absent: LangGraph never reports a pause id at
+resume time.
