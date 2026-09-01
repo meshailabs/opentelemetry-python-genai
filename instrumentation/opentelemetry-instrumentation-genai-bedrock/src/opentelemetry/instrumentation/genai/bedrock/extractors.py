@@ -47,7 +47,7 @@ _FINISH_REASON_MAP: dict[str, str] = {
     "endoftext": "stop",
     "length": "length",
     "stop": "stop",
-    "tool_calls": "tool_calls",
+    "tool_calls": "tool_call",
 }
 
 _DOC_MIME_TYPES: dict[str, str] = {
