@@ -19,8 +19,16 @@ against langgraph 1.2.9 and langchain-core 1.5.0. Captured output:
    is wrapped so every persisted checkpoint reports its id.
    `BaseCheckpointSaver.put` is abstract and every saver overrides it, so the
    instance is patched rather than the base class. `aput` may delegate to
-   `put`, possibly on a worker thread, so de-duplication remembers the last
-   checkpoint id per namespace instead of relying on context propagation.
+   `put`, possibly on a worker thread, so a write is de-duplicated by holding
+   the identity of the `Checkpoint` object while the write is in flight, not
+   by remembering ids and not by relying on context propagation: a nested call
+   receiving the same object is the delegation and stays silent, and the
+   outermost call reports. This assumes one checkpoint object per logical
+   write, which LangGraph guarantees by handing the saver a freshly
+   constructed mapping per superstep (`_loop.py` passes
+   `copy_checkpoint(self.checkpoint)`), so two independent writes never share
+   an object. A saver that copies the checkpoint before delegating is reported
+   twice, which is the safe direction.
 
 The interrupt is not observable from `on_chain_end`: LangGraph adds
 `__interrupt__` to the invoke return value after the callback fires.
@@ -47,7 +55,7 @@ instrumentation, but it is determined by LangGraph, not chosen: the resume event
 supplies a checkpoint id and nothing else.
 
 `GenAIInvocation.emit_event` is byte-identical to the hunk in open PR #507,
-saved here as `pr507-emit_event.patch` so the identity is checkable, and is
+saved here as `pr507-emit_event.py.txt` and checked by a test, and is
 dropped when rebasing onto that PR. It is not a competing API.
 
 ## Checkpoint volume
