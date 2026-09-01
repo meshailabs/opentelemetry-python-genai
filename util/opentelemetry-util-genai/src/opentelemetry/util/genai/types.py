@@ -296,7 +296,7 @@ MessagePart = Union[
 
 
 FinishReason = Literal[
-    "content_filter", "error", "length", "stop", "tool_calls", "compaction"
+    "content_filter", "error", "length", "stop", "tool_call", "compaction"
 ]
 
 

@@ -205,7 +205,7 @@ def convert_to_output_messages(
 
             if function_call:
                 parts.append(_function_call_part(function_call))
-                finish_reason = "tool_calls"
+                finish_reason = "tool_call"
 
             if content:
                 text = _extract_content_text(content)
