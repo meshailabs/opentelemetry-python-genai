@@ -22,6 +22,7 @@ from .extractors import (
     _is_dict,
     _is_list,
     _parse_body,
+    _safe_int,
     map_finish_reason,
 )
 
@@ -105,17 +106,17 @@ class BedrockConverseStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
             metadata = chunk["metadata"]
             usage = metadata.get("usage", {})
             if "inputTokens" in usage:
-                self._self_input_tokens = usage["inputTokens"]
+                self._self_input_tokens = _safe_int(usage["inputTokens"])
             if "outputTokens" in usage:
-                self._self_output_tokens = usage["outputTokens"]
+                self._self_output_tokens = _safe_int(usage["outputTokens"])
             if "cacheReadInputTokens" in usage:
-                self._self_cache_read_input_tokens = usage[
-                    "cacheReadInputTokens"
-                ]
+                self._self_cache_read_input_tokens = _safe_int(
+                    usage["cacheReadInputTokens"]
+                )
             if "cacheWriteInputTokens" in usage:
-                self._self_cache_creation_input_tokens = usage[
-                    "cacheWriteInputTokens"
-                ]
+                self._self_cache_creation_input_tokens = _safe_int(
+                    usage["cacheWriteInputTokens"]
+                )
 
     def _on_stream_end(self) -> None:
         finish_reason = map_finish_reason(self._self_stop_reason)
@@ -211,15 +212,11 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
         metrics = chunk_data.get("amazon-bedrock-invocationMetrics")
         if _is_dict(metrics):
             if "inputTokenCount" in metrics:
-                try:
-                    self._self_input_tokens = int(metrics["inputTokenCount"])
-                except (ValueError, TypeError):
-                    pass
+                self._self_input_tokens = _safe_int(metrics["inputTokenCount"])
             if "outputTokenCount" in metrics:
-                try:
-                    self._self_output_tokens = int(metrics["outputTokenCount"])
-                except (ValueError, TypeError):
-                    pass
+                self._self_output_tokens = _safe_int(
+                    metrics["outputTokenCount"]
+                )
 
         # 2. Anthropic Messages format
         msg_type = chunk_data.get("type")
@@ -230,10 +227,7 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                     self._self_role = message["role"]
                 usage = message.get("usage", {})
                 if _is_dict(usage) and "input_tokens" in usage:
-                    try:
-                        self._self_input_tokens = int(usage["input_tokens"])
-                    except (ValueError, TypeError):
-                        pass
+                    self._self_input_tokens = _safe_int(usage["input_tokens"])
         elif msg_type == "content_block_delta":
             delta = chunk_data.get("delta", {})
             if _is_dict(delta):
@@ -250,10 +244,7 @@ class BedrockInvokeModelStreamWrapper(SyncStreamWrapper[dict[str, Any]]):
                 self._self_stop_reason = delta["stop_reason"]
             usage = chunk_data.get("usage", {})
             if _is_dict(usage) and "output_tokens" in usage:
-                try:
-                    self._self_output_tokens = int(usage["output_tokens"])
-                except (ValueError, TypeError):
-                    pass
+                self._self_output_tokens = _safe_int(usage["output_tokens"])
 
         # 3. Legacy Claude / Titan / Llama / Mistral / Cohere stream chunks
         if "completion" in chunk_data and isinstance(
