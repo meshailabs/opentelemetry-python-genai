@@ -7,9 +7,6 @@ import json
 from typing import Any, TypeGuard
 from urllib.parse import urlparse
 
-from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import (
-    GenAiOperationNameValues,
-)
 from opentelemetry.util.genai.invocation import InferenceInvocation
 from opentelemetry.util.genai.types import (
     BlobPart,
@@ -322,17 +319,6 @@ def _parse_body(body: Any) -> dict[str, Any] | None:
         except Exception:
             return None
     return None
-
-
-def determine_invoke_model_operation_name(api_params: dict[str, Any]) -> str:
-    """Determine whether InvokeModel call represents chat or text_completion."""
-    body = _parse_body(api_params.get("body"))
-    if _is_dict(body):
-        if "messages" in body:
-            return GenAiOperationNameValues.CHAT.value
-        if "prompt" in body or "inputText" in body or "message" in body:
-            return GenAiOperationNameValues.TEXT_COMPLETION.value
-    return GenAiOperationNameValues.TEXT_COMPLETION.value
 
 
 def extract_invoke_model_request(

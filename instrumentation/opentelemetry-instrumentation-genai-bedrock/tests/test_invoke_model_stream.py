@@ -140,7 +140,6 @@ def test_stream_wrapper_titan_with_metrics(
     invocation = handler.inference(
         provider="aws.bedrock",
         request_model="amazon.titan-text-lite-v1",
-        operation_name="text_completion",
     )
     events = [
         {
@@ -180,7 +179,7 @@ def test_stream_wrapper_titan_with_metrics(
     assert len(spans) == 1
     span = spans[0]
 
-    assert span.name == "text_completion amazon.titan-text-lite-v1"
+    assert span.name == "chat amazon.titan-text-lite-v1"
     assert span.attributes[GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS] == 6
     assert span.attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 12
     assert span.attributes[GenAIAttributes.GEN_AI_RESPONSE_FINISH_REASONS] == (
@@ -206,7 +205,6 @@ def test_stream_wrapper_llama_and_mistral(
     invocation = handler.inference(
         provider="aws.bedrock",
         request_model="meta.llama3-8b-instruct-v1:0",
-        operation_name="text_completion",
     )
     events = [
         {
@@ -244,7 +242,6 @@ def test_stream_wrapper_no_content(
     invocation = handler.inference(
         provider="aws.bedrock",
         request_model="amazon.titan-text-lite-v1",
-        operation_name="text_completion",
     )
     events = [
         {
@@ -288,7 +285,6 @@ def test_stream_wrapper_caller_side_error(
     invocation = handler.inference(
         provider="aws.bedrock",
         request_model="amazon.titan-text-lite-v1",
-        operation_name="text_completion",
     )
     events = [
         {
@@ -323,7 +319,6 @@ def test_stream_wrapper_stream_side_error(
     invocation = handler.inference(
         provider="aws.bedrock",
         request_model="amazon.titan-text-lite-v1",
-        operation_name="text_completion",
     )
 
     class FailingEventStream:
@@ -389,4 +384,4 @@ def test_handle_invoke_model_streaming_integration(
 
     spans = span_exporter.get_finished_spans()
     assert len(spans) == 1
-    assert spans[0].name == "text_completion amazon.titan-text-lite-v1"
+    assert spans[0].name == "chat amazon.titan-text-lite-v1"

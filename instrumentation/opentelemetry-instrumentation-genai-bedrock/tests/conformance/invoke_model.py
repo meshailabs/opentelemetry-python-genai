@@ -1,7 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance scenario: bedrock invoke_model (text_completion)."""
+"""Conformance scenario: bedrock invoke_model (chat)."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from opentelemetry.test_util_genai.instrumentor import instrument
 
 
 class InvokeModelScenario(Scenario):
-    expected_spans = {"text_completion": 1}
+    expected_spans = {"chat": 1}
     expected_metrics = (
         "gen_ai.client.operation.duration",
         "gen_ai.client.token.usage",

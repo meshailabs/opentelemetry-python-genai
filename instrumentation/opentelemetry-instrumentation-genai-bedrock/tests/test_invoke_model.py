@@ -14,7 +14,6 @@ from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from opentelemetry.instrumentation.genai.bedrock.extractors import (
-    determine_invoke_model_operation_name,
     extract_invoke_model_response,
 )
 from opentelemetry.semconv._incubating.attributes import (
@@ -191,10 +190,10 @@ def test_invoke_model_anthropic_legacy_completion(
     assert len(spans) == 1
     span = spans[0]
 
-    assert span.name == "text_completion anthropic.claude-v2"
+    assert span.name == "chat anthropic.claude-v2"
     assert (
         span.attributes[GenAIAttributes.GEN_AI_OPERATION_NAME]
-        == GenAIAttributes.GenAiOperationNameValues.TEXT_COMPLETION.value
+        == GenAIAttributes.GenAiOperationNameValues.CHAT.value
     )
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_MAX_TOKENS] == 50
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_TEMPERATURE] == 0.5
@@ -258,7 +257,7 @@ def test_invoke_model_titan_text(
     assert len(spans) == 1
     span = spans[0]
 
-    assert span.name == "text_completion amazon.titan-text-express-v1"
+    assert span.name == "chat amazon.titan-text-express-v1"
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_MAX_TOKENS] == 200
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_TEMPERATURE] == 0.6
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_TOP_P] == 0.8
@@ -314,7 +313,7 @@ def test_invoke_model_llama(
     assert len(spans) == 1
     span = spans[0]
 
-    assert span.name == "text_completion meta.llama3-8b-instruct-v1:0"
+    assert span.name == "chat meta.llama3-8b-instruct-v1:0"
     assert span.attributes[GenAIAttributes.GEN_AI_REQUEST_MAX_TOKENS] == 150
     assert span.attributes[GenAIAttributes.GEN_AI_USAGE_INPUT_TOKENS] == 5
     assert span.attributes[GenAIAttributes.GEN_AI_USAGE_OUTPUT_TOKENS] == 30
@@ -424,30 +423,3 @@ def test_extract_invoke_model_response_headers(tracer_provider) -> None:
     )
     assert invocation.input_tokens == 15
     assert invocation.output_tokens == 22
-
-
-def test_determine_invoke_model_operation_name() -> None:
-    assert (
-        determine_invoke_model_operation_name(
-            {"body": json.dumps({"messages": [{"role": "user"}]})}
-        )
-        == "chat"
-    )
-    assert (
-        determine_invoke_model_operation_name(
-            {"body": json.dumps({"prompt": "Hello"})}
-        )
-        == "text_completion"
-    )
-    assert (
-        determine_invoke_model_operation_name(
-            {"body": json.dumps({"inputText": "Hello"})}
-        )
-        == "text_completion"
-    )
-    assert (
-        determine_invoke_model_operation_name(
-            {"body": json.dumps({"message": "Hello"})}
-        )
-        == "text_completion"
-    )

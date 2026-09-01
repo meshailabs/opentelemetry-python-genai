@@ -1,7 +1,7 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Conformance scenario: bedrock invoke_model_with_response_stream (streaming text_completion)."""
+"""Conformance scenario: bedrock invoke_model_with_response_stream (streaming chat)."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from opentelemetry.test_util_genai.instrumentor import instrument
 
 
 class InvokeModelStreamingScenario(Scenario):
-    expected_spans = {"text_completion": 1}
+    expected_spans = {"chat": 1}
     expected_metrics = (
         "gen_ai.client.operation.duration",
         "gen_ai.client.token.usage",
@@ -52,7 +52,7 @@ class InvokeModelStreamingScenario(Scenario):
         ]
         assert stream_values == [True], (
             "streaming messages should set gen_ai.request.stream=true on the "
-            f"text_completion span; saw {stream_values}"
+            f"chat span; saw {stream_values}"
         )
 
     def run(

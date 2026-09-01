@@ -20,7 +20,6 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import (
 from opentelemetry.util.genai.handler import TelemetryHandler
 
 from .extractors import (
-    determine_invoke_model_operation_name,
     extract_converse_request,
     extract_converse_response,
     extract_invoke_model_request,
@@ -106,13 +105,11 @@ def _handle_invoke_model(
     server_address, server_port = extract_server_address_and_port(endpoint_url)
     raw_model_id = api_params.get("modelId")
     model_id = str(raw_model_id) if raw_model_id else None
-    operation_name = determine_invoke_model_operation_name(api_params)
     invocation = handler.inference(
         provider=GenAiProviderNameValues.AWS_BEDROCK.value,
         request_model=model_id,
         server_address=server_address,
         server_port=server_port,
-        operation_name=operation_name,
     )
     capture_content = handler.should_capture_content()
     extract_invoke_model_request(
