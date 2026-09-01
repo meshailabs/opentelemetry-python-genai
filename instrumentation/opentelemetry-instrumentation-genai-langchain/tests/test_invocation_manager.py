@@ -237,5 +237,47 @@ def test_none_invocation_can_be_stored_and_retrieved(invocation_manager):
     assert invocation_manager.get_invocation(run_id) is None
 
 
+def test_thread_binding_resolves_the_running_invocation(
+    invocation_manager, mock_invocation
+):
+    run_id = uuid.uuid4()
+    invocation_manager.add_invocation_state(
+        run_id=run_id, parent_run_id=None, invocation=mock_invocation
+    )
+
+    invocation_manager.bind_thread("thread-1", run_id)
+
+    assert (
+        invocation_manager.get_thread_invocation("thread-1") is mock_invocation
+    )
+    assert invocation_manager.get_thread_invocation("thread-2") is None
+
+    invocation_manager.unbind_thread(run_id)
+
+    assert invocation_manager.get_thread_invocation("thread-1") is None
+
+
+def test_rebinding_a_thread_id_hands_it_to_the_newer_run(
+    invocation_manager, mock_invocation
+):
+    first_run_id = uuid.uuid4()
+    second_run_id = uuid.uuid4()
+    second_invocation = mock.Mock(spec=GenAIInvocation)
+    invocation_manager.add_invocation_state(
+        run_id=first_run_id, parent_run_id=None, invocation=mock_invocation
+    )
+    invocation_manager.add_invocation_state(
+        run_id=second_run_id, parent_run_id=None, invocation=second_invocation
+    )
+
+    invocation_manager.bind_thread("thread-1", first_run_id)
+    invocation_manager.bind_thread("thread-1", second_run_id)
+
+    assert (
+        invocation_manager.get_thread_invocation("thread-1")
+        is second_invocation
+    )
+
+
 def test_delete_nonexistent_run_id_does_not_raise(invocation_manager):
     invocation_manager.delete_invocation_state(uuid.uuid4())  # must not raise

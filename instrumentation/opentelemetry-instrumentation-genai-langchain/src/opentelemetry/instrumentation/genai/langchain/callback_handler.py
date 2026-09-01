@@ -20,6 +20,16 @@ from langchain_core.outputs import (
 from opentelemetry.instrumentation.genai.langchain.invocation_manager import (
     _InvocationManager,
 )
+from opentelemetry.instrumentation.genai.langchain.lifecycle import (
+    ATTR_CHECKPOINT_ID,
+    ATTR_PAUSE_ID,
+    ATTR_RESUMED_FROM_ID,
+    ATTR_RESUMED_FROM_TYPE,
+    EVENT_AGENT_CHECKPOINTED,
+    EVENT_AGENT_PAUSED,
+    EVENT_AGENT_RESUMED,
+    RESUMED_FROM_TYPE_CHECKPOINT,
+)
 from opentelemetry.instrumentation.genai.langchain.operation_mapping import (
     OperationName,
     classify_chain_run,
@@ -113,6 +123,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             self._invocation_manager.add_invocation_state(
                 run_id, parent_run_id, workflow
             )
+            self._bind_langgraph_thread(run_id, metadata)
         elif operation == OperationName.INVOKE_AGENT:
             # agent name passed by the user
             suggested_agent_name = resolve_agent_name(
@@ -173,6 +184,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> Any:
+        self._invocation_manager.unbind_thread(run_id)
         invocation = self._invocation_manager.get_invocation(run_id=run_id)
         if invocation is None or not isinstance(
             invocation, (WorkflowInvocation, AgentInvocation)
@@ -197,6 +209,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         parent_run_id: UUID | None = None,
         **kwargs: Any,
     ) -> Any:
+        self._invocation_manager.unbind_thread(run_id)
         invocation = self._invocation_manager.get_invocation(run_id=run_id)
         if invocation is None or not isinstance(
             invocation, (WorkflowInvocation, AgentInvocation)
@@ -679,6 +692,80 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         if not invocation.span.is_recording():
             self._invocation_manager.delete_invocation_state(run_id=run_id)
 
+    # ------------------------------------------------------------------
+    # LangGraph durable-execution lifecycle.
+    #
+    # LangGraph dispatches ``on_interrupt``/``on_resume`` to the handlers in the
+    # run's callback manager (see ``langgraph.callbacks``), so this handler
+    # receives them through the callback manager it is already injected into.
+    # The events are typed dataclasses in LangGraph, but they are read
+    # structurally here so the instrumentation keeps no LangGraph import.
+    # ------------------------------------------------------------------
+
+    def on_interrupt(self, event: Any) -> None:
+        """Emit one paused event per interrupt that suspended the graph."""
+        workflow = self._find_nearest_workflow(getattr(event, "run_id", None))
+        if workflow is None:
+            return
+
+        checkpoint_id = getattr(event, "checkpoint_id", None)
+        for pause in getattr(event, "interrupts", ()) or ():
+            pause_id = getattr(pause, "id", None)
+            if not pause_id:
+                continue
+            attributes: dict[str, str] = {ATTR_PAUSE_ID: str(pause_id)}
+            # ``gen_ai.agent.pause.reason`` is deliberately absent: LangGraph's
+            # ``interrupt(value)`` carries an opaque application payload and
+            # nothing that says who or what is expected to resolve the pause.
+            if checkpoint_id:
+                attributes[ATTR_CHECKPOINT_ID] = str(checkpoint_id)
+            workflow.emit_event(
+                EVENT_AGENT_PAUSED,
+                attributes,
+                body="Agent execution paused",
+            )
+
+    def on_resume(self, event: Any) -> None:
+        """Emit a resumed event for a graph continuing from a checkpoint."""
+        workflow = self._find_nearest_workflow(getattr(event, "run_id", None))
+        checkpoint_id = getattr(event, "checkpoint_id", None)
+        if workflow is None or not checkpoint_id:
+            return
+
+        workflow.emit_event(
+            EVENT_AGENT_RESUMED,
+            {
+                ATTR_RESUMED_FROM_TYPE: RESUMED_FROM_TYPE_CHECKPOINT,
+                ATTR_RESUMED_FROM_ID: str(checkpoint_id),
+            },
+            body="Agent execution resumed",
+        )
+
+    def checkpoint_written(self, thread_id: str, checkpoint_id: str) -> None:
+        """Emit a checkpointed event for one persisted checkpoint.
+
+        Called by the wrapped checkpointer, which has no callback run id, so the
+        live graph run is resolved through the LangGraph thread id.
+        """
+        workflow = self._invocation_manager.get_thread_invocation(thread_id)
+        if not isinstance(workflow, WorkflowInvocation):
+            return
+
+        workflow.emit_event(
+            EVENT_AGENT_CHECKPOINTED,
+            {ATTR_CHECKPOINT_ID: checkpoint_id},
+            body="Agent execution checkpointed",
+        )
+
+    def _bind_langgraph_thread(
+        self, run_id: UUID, metadata: dict[str, Any] | None
+    ) -> None:
+        if not metadata or metadata.get("ls_integration") != "langgraph":
+            return
+        thread_id = metadata.get("thread_id")
+        if thread_id:
+            self._invocation_manager.bind_thread(str(thread_id), run_id)
+
     def _find_nearest_agent(
         self, run_id: UUID | None
     ) -> AgentInvocation | None:
@@ -688,6 +775,19 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             visited.add(current)
             entity = self._invocation_manager.get_invocation(current)
             if isinstance(entity, AgentInvocation):
+                return entity
+            current = self._invocation_manager.get_parent_run_id(current)
+        return None
+
+    def _find_nearest_workflow(
+        self, run_id: UUID | None
+    ) -> WorkflowInvocation | None:
+        current = run_id
+        visited: set[UUID] = set()
+        while current is not None and current not in visited:
+            visited.add(current)
+            entity = self._invocation_manager.get_invocation(current)
+            if isinstance(entity, WorkflowInvocation):
                 return entity
             current = self._invocation_manager.get_parent_run_id(current)
         return None
