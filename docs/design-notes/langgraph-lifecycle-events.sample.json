@@ -3,7 +3,7 @@
   "langgraph_ground_truth": {
     "interrupts_returned_by_invoke": [
       {
-        "id": "d860af03f6eef8ccd2ca772902d858e0",
+        "id": "90016a1c18e58b2276a7ee2eb6872d1e",
         "value": {
           "question": "approve expense?",
           "amount": 250
@@ -19,8 +19,8 @@
   "spans": [
     {
       "name": "invoke_workflow LangGraph",
-      "trace_id": "6f29c150adf3de00cf5d9092ed032a8b",
-      "span_id": "28b62ec32c3ecb3c",
+      "trace_id": "29e65cb8f0ecbb90c1f2b3c8a322fd33",
+      "span_id": "9b1c0c852ae85ad9",
       "parent_span_id": null,
       "kind": "SpanKind.INTERNAL",
       "attributes": {
@@ -31,8 +31,8 @@
     },
     {
       "name": "invoke_workflow LangGraph",
-      "trace_id": "11c51a5fdb0af4a5f7fa6359aac71463",
-      "span_id": "b60785f4c480487b",
+      "trace_id": "8fa8291aca2e49c7fda3139c8901d3e7",
+      "span_id": "0e4ddf0aeda7c107",
       "parent_span_id": null,
       "kind": "SpanKind.INTERNAL",
       "attributes": {
@@ -46,66 +46,66 @@
     {
       "event_name": "gen_ai.agent.checkpointed",
       "body": "Agent execution checkpointed",
-      "trace_id": "6f29c150adf3de00cf5d9092ed032a8b",
-      "span_id": "28b62ec32c3ecb3c",
+      "trace_id": "29e65cb8f0ecbb90c1f2b3c8a322fd33",
+      "span_id": "9b1c0c852ae85ad9",
       "attributes": {
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f0-6ae2-bfff-0d0442c5a09f"
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95aa-65c1-bfff-d5bd5c3fd771"
       }
     },
     {
       "event_name": "gen_ai.agent.checkpointed",
       "body": "Agent execution checkpointed",
-      "trace_id": "6f29c150adf3de00cf5d9092ed032a8b",
-      "span_id": "28b62ec32c3ecb3c",
+      "trace_id": "29e65cb8f0ecbb90c1f2b3c8a322fd33",
+      "span_id": "9b1c0c852ae85ad9",
       "attributes": {
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f2-620c-8000-8503212a629d"
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95ab-6dc6-8000-e5c062f5cbc2"
       }
     },
     {
       "event_name": "gen_ai.agent.checkpointed",
       "body": "Agent execution checkpointed",
-      "trace_id": "6f29c150adf3de00cf5d9092ed032a8b",
-      "span_id": "28b62ec32c3ecb3c",
+      "trace_id": "29e65cb8f0ecbb90c1f2b3c8a322fd33",
+      "span_id": "9b1c0c852ae85ad9",
       "attributes": {
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f3-6b2d-8001-7e0889b1a32b"
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95ad-6aad-8001-c553ba02152d"
       }
     },
     {
       "event_name": "gen_ai.agent.paused",
       "body": "Agent execution paused",
-      "trace_id": "6f29c150adf3de00cf5d9092ed032a8b",
-      "span_id": "28b62ec32c3ecb3c",
+      "trace_id": "29e65cb8f0ecbb90c1f2b3c8a322fd33",
+      "span_id": "9b1c0c852ae85ad9",
       "attributes": {
-        "gen_ai.agent.pause.id": "d860af03f6eef8ccd2ca772902d858e0",
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f3-6b2d-8001-7e0889b1a32b"
+        "gen_ai.agent.pause.id": "90016a1c18e58b2276a7ee2eb6872d1e",
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95ad-6aad-8001-c553ba02152d"
       }
     },
     {
       "event_name": "gen_ai.agent.resumed",
       "body": "Agent execution resumed",
-      "trace_id": "11c51a5fdb0af4a5f7fa6359aac71463",
-      "span_id": "b60785f4c480487b",
+      "trace_id": "8fa8291aca2e49c7fda3139c8901d3e7",
+      "span_id": "0e4ddf0aeda7c107",
       "attributes": {
         "gen_ai.agent.resumed_from.type": "checkpoint",
-        "gen_ai.agent.resumed_from.id": "1f1a6563-85f3-6b2d-8001-7e0889b1a32b"
+        "gen_ai.agent.resumed_from.id": "1f1a6576-95ad-6aad-8001-c553ba02152d"
       }
     },
     {
       "event_name": "gen_ai.agent.checkpointed",
       "body": "Agent execution checkpointed",
-      "trace_id": "11c51a5fdb0af4a5f7fa6359aac71463",
-      "span_id": "b60785f4c480487b",
+      "trace_id": "8fa8291aca2e49c7fda3139c8901d3e7",
+      "span_id": "0e4ddf0aeda7c107",
       "attributes": {
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f7-6ff7-8002-c93de53c3b52"
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95b1-6d14-8002-02f4bcd48908"
       }
     },
     {
       "event_name": "gen_ai.agent.checkpointed",
       "body": "Agent execution checkpointed",
-      "trace_id": "11c51a5fdb0af4a5f7fa6359aac71463",
-      "span_id": "b60785f4c480487b",
+      "trace_id": "8fa8291aca2e49c7fda3139c8901d3e7",
+      "span_id": "0e4ddf0aeda7c107",
       "attributes": {
-        "gen_ai.agent.checkpoint.id": "1f1a6563-85f9-6371-8003-8dd53fe72a0a"
+        "gen_ai.agent.checkpoint.id": "1f1a6576-95b3-61dd-8003-be9358a193e5"
       }
     }
   ]

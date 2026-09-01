@@ -286,11 +286,11 @@ def test_nested_run_never_displaces_the_run_containing_it(invocation_manager):
     assert invocation_manager.get_thread_invocation("t") is inner_invocation
 
     # When the nested run ends, the run containing it keeps the thread id.
-    inner_run_id = invocation_manager._threads["t"][-1]
+    inner_run_id = invocation_manager._threads["t"][-1][1]
     invocation_manager.unbind_thread(inner_run_id)
     invocation_manager.delete_invocation_state(inner_run_id)
 
-    assert invocation_manager._threads["t"] == [outer_run_id]
+    assert invocation_manager._threads["t"] == [("", outer_run_id)]
     assert invocation_manager.get_thread_invocation("t") is outer_invocation
 
 
@@ -310,9 +310,7 @@ def test_dead_runs_are_pruned_from_the_thread_binding(invocation_manager):
 
     _, live_invocation = _bind_run(invocation_manager, "t")
 
-    assert invocation_manager._threads["t"] == [
-        invocation_manager._threads["t"][-1]
-    ]
+    assert len(invocation_manager._threads["t"]) == 1
     assert invocation_manager.get_thread_invocation("t") is live_invocation
 
 
@@ -371,3 +369,51 @@ def test_thread_lookup_is_atomic_against_concurrent_run_teardown(
     assert all(
         result is None or isinstance(result, mock.Mock) for result in results
     )
+
+
+def test_checkpoint_namespace_selects_the_run_that_owns_it(invocation_manager):
+    root_run_id = uuid.uuid4()
+    child_run_id = uuid.uuid4()
+    root_invocation = mock.Mock(spec=GenAIInvocation)
+    child_invocation = mock.Mock(spec=GenAIInvocation)
+    invocation_manager.add_invocation_state(
+        run_id=root_run_id, parent_run_id=None, invocation=root_invocation
+    )
+    invocation_manager.add_invocation_state(
+        run_id=child_run_id,
+        parent_run_id=root_run_id,
+        invocation=child_invocation,
+    )
+    invocation_manager.bind_thread("t", root_run_id, "")
+    invocation_manager.bind_thread("t", child_run_id, "child:abc")
+
+    # A write made under the child namespace belongs to the child run.
+    assert (
+        invocation_manager.get_thread_invocation("t", "child:abc")
+        is child_invocation
+    )
+    # And so does a write from a graph nested inside the child.
+    assert (
+        invocation_manager.get_thread_invocation("t", "child:abc|leaf:def")
+        is child_invocation
+    )
+    # A root namespace write belongs to the root run.
+    assert invocation_manager.get_thread_invocation("t", "") is root_invocation
+    # A namespace no run is bound for falls back to the nearest enclosing run.
+    assert (
+        invocation_manager.get_thread_invocation("t", "other:xyz")
+        is root_invocation
+    )
+
+
+def test_namespace_write_falls_back_when_the_child_run_has_no_binding(
+    invocation_manager,
+):
+    root_run_id, root_invocation = _bind_run(invocation_manager, "t")
+
+    # Nothing is bound for the child namespace, so the enclosing run owns it.
+    assert (
+        invocation_manager.get_thread_invocation("t", "child:abc")
+        is root_invocation
+    )
+    assert root_run_id is not None

@@ -18,6 +18,17 @@ _logger = logging.getLogger(__name__)
 _MAX_TRACKED_THREADS = 512
 _MAX_RUNS_PER_THREAD = 32
 
+# LangGraph joins nested checkpoint namespaces with this separator
+# (``langgraph.constants.NS_SEP``).
+_NAMESPACE_SEPARATOR = "|"
+
+
+def _namespace_contains(outer: str, inner: str) -> bool:
+    """Return whether ``outer`` is ``inner`` or encloses it."""
+    if not outer:
+        return True
+    return inner == outer or inner.startswith(outer + _NAMESPACE_SEPARATOR)
+
 
 @dataclass
 class _InvocationState:
@@ -34,12 +45,14 @@ class _InvocationManager:
         # Map from run_id -> _InvocationState, to keep track of invocations and parent/child relationships
         # TODO: TTL cache to avoid memory leaks in long-running processes.
         self._invocations: dict[UUID, _InvocationState] = {}
-        # Map from LangGraph thread id -> the live graph runs on that thread id,
-        # outermost first. A checkpointer call carries no callback run id, so
-        # the thread id in its config is the only handle back to a running
-        # invocation. This is a stack rather than a single id so that a nested
+        # Map from LangGraph thread id -> the live graph runs on that thread
+        # id, outermost first, each paired with the checkpoint namespace its
+        # own checkpoints are written under ("" for a top level graph). A
+        # checkpointer call carries no callback run id, so the thread id and
+        # namespace in its config are the only handle back to a running
+        # invocation. This is a list rather than a single id so that a nested
         # graph run never displaces the run that contains it.
-        self._threads: dict[str, list[UUID]] = {}
+        self._threads: dict[str, list[tuple[str, UUID]]] = {}
         # One lock guards both maps: a checkpoint lookup reads the thread stack
         # and the invocation states together, and must not observe a run being
         # torn down halfway through by a concurrent chain end.
@@ -49,15 +62,24 @@ class _InvocationManager:
     # LangGraph thread correlation
     # ------------------------------------------------------------------
 
-    def bind_thread(self, thread_id: str, run_id: UUID) -> None:
-        """Record that ``run_id`` is a live graph run on ``thread_id``."""
+    def bind_thread(
+        self, thread_id: str, run_id: UUID, namespace: str = ""
+    ) -> None:
+        """Record that ``run_id`` is a live graph run on ``thread_id``.
+
+        ``namespace`` is the LangGraph checkpoint namespace the run's own
+        checkpoints are written under: "" for a top level graph, and the
+        run's ``langgraph_checkpoint_ns`` for a nested graph.
+        """
         with self._lock:
             runs = self._threads.setdefault(thread_id, [])
             # Drop runs whose invocation state is already gone, so abandoned
             # runs do not pin an entry forever.
-            runs[:] = [run for run in runs if run in self._invocations]
-            if run_id not in runs:
-                runs.append(run_id)
+            runs[:] = [
+                entry for entry in runs if entry[1] in self._invocations
+            ]
+            if all(entry[1] != run_id for entry in runs):
+                runs.append((namespace, run_id))
             del runs[:-_MAX_RUNS_PER_THREAD]
             self._prune_threads()
 
@@ -65,41 +87,51 @@ class _InvocationManager:
         """Forget ``run_id``, keeping any run that contains or follows it."""
         with self._lock:
             for thread_id, runs in list(self._threads.items()):
-                if run_id in runs:
-                    runs.remove(run_id)
+                runs[:] = [entry for entry in runs if entry[1] != run_id]
                 if not runs:
                     del self._threads[thread_id]
 
-    def get_thread_invocation(self, thread_id: str) -> GenAIInvocation | None:
-        """Return the invocation a checkpoint on ``thread_id`` belongs to.
+    def get_thread_invocation(
+        self, thread_id: str, namespace: str = ""
+    ) -> GenAIInvocation | None:
+        """Return the invocation a checkpoint write belongs to.
 
-        With nested graph runs the innermost live run owns the checkpoint, and
-        the runs containing it are its ancestors. If two live runs on the same
-        thread id are unrelated, ownership is genuinely ambiguous and nothing is
-        returned: a miscorrelated event is worse than a missing one.
+        A write carries the namespace of the graph that produced it. The run
+        bound with that exact namespace owns it; if no run is bound there, the
+        nearest enclosing run does, which is the live run whose namespace is
+        the longest prefix of the write's namespace. If two live runs are
+        equally specific and unrelated, ownership is genuinely ambiguous and
+        nothing is returned: a miscorrelated event is worse than a missing one.
         """
         with self._lock:
-            runs = [
-                run
-                for run in self._threads.get(thread_id, [])
-                if run in self._invocations
+            candidates = [
+                entry
+                for entry in self._threads.get(thread_id, [])
+                if entry[1] in self._invocations
+                and _namespace_contains(entry[0], namespace)
             ]
-            if not runs:
+            if not candidates:
                 return None
 
-            candidate = runs[-1]
-            if len(runs) > 1:
-                ancestors = self._ancestors(candidate)
-                if not all(run in ancestors for run in runs[:-1]):
+            longest = max(len(entry[0]) for entry in candidates)
+            matches = [
+                entry for entry in candidates if len(entry[0]) == longest
+            ]
+            if len(matches) > 1:
+                # Equally specific runs are only unambiguous when they nest.
+                innermost = matches[-1][1]
+                ancestors = self._ancestors(innermost)
+                if not all(entry[1] in ancestors for entry in matches[:-1]):
                     _logger.debug(
-                        "Ambiguous LangGraph thread id %s: %d unrelated live "
-                        "runs, dropping the checkpoint event",
+                        "Ambiguous LangGraph thread id %s namespace %r: %d "
+                        "unrelated live runs, dropping the checkpoint event",
                         thread_id,
-                        len(runs),
+                        namespace,
+                        len(matches),
                     )
                     return None
 
-            state = self._invocations.get(candidate)
+            state = self._invocations.get(matches[-1][1])
             return state.invocation if state else None
 
     def _ancestors(self, run_id: UUID) -> set[UUID]:
