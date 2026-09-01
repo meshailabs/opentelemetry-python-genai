@@ -609,33 +609,72 @@ def test_separate_writes_reusing_a_checkpoint_id_are_both_reported():
     assert len(reporter.calls) == 2
 
 
-def test_interleaved_delegated_writes_are_all_reported():
-    saver = _FixedIdSaver()
+class _SequencedSaver:
+    """Saver that lets a test force an exact interleaving of two writes.
+
+    ``aput`` delegates to ``put`` with the same checkpoint object, then holds
+    the outer call open until a second, independent write has entered.
+    """
+
+    def __init__(self) -> None:
+        self.write_count = 0
+        self.delegated_returned = threading.Event()
+        self.second_write_entered = threading.Event()
+        self._lock = threading.Lock()
+
+    def put(self, config, checkpoint, metadata, new_versions):
+        with self._lock:
+            self.write_count += 1
+        if checkpoint["name"] == "B":
+            self.second_write_entered.set()
+        return {
+            "configurable": {
+                "thread_id": config["configurable"]["thread_id"],
+                "checkpoint_ns": "",
+                "checkpoint_id": f"ckpt-{checkpoint['name']}",
+            }
+        }
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        result = self.put(config, checkpoint, metadata, new_versions)
+        self.delegated_returned.set()
+        # Hold the outer write open until the independent write has entered.
+        assert self.second_write_entered.wait(10)
+        return result
+
+
+def test_forced_interleaving_reports_each_write_exactly_once():
+    saver = _SequencedSaver()
     reporter = _StubReporter()
     _wrap_checkpointer(saver, reporter)
-    started = threading.Barrier(3)
+    config = _fixed_id_config("shared")
 
-    def write(index: int) -> None:
-        started.wait()
-        asyncio.run(
-            saver.aput(_fixed_id_config(f"t{index}"), {"id": index}, {}, {})
-        )
+    def write_a() -> None:
+        asyncio.run(saver.aput(config, {"name": "A"}, {}, {}))
 
-    threads = [threading.Thread(target=write, args=(i,)) for i in range(3)]
+    def write_b() -> None:
+        # Enter only after A's delegated inner call has already returned.
+        assert saver.delegated_returned.wait(10)
+        saver.put(config, {"name": "B"}, {}, {})
+
+    threads = [
+        threading.Thread(target=write_a),
+        threading.Thread(target=write_b),
+    ]
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=15)
+    assert not any(thread.is_alive() for thread in threads)
 
-    # Each concurrent delegated write is reported exactly once, and no write
-    # is dropped as a false duplicate of another in flight write.
-    assert saver.write_count == 3
-    assert len(reporter.calls) == 3
-    assert {thread_id for thread_id, _, _ in reporter.calls} == {
-        "t0",
-        "t1",
-        "t2",
-    }
+    # Sequence forced above: outer A enters, delegated A enters and returns,
+    # outer B enters, outer A returns, outer B returns. The delegation is
+    # silent and neither independent write is dropped as a false duplicate.
+    assert saver.write_count == 2
+    assert sorted(checkpoint_id for _, checkpoint_id, _ in reporter.calls) == [
+        "ckpt-A",
+        "ckpt-B",
+    ]
 
 
 def test_concurrent_writes_through_a_real_delegating_saver(
