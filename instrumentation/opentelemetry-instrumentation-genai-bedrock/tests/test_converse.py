@@ -381,6 +381,16 @@ def test_extract_converse_request_top_k_and_seed(tracer_provider) -> None:
     )
     assert invocation3.top_k == 20.0
 
+    invocation4 = handler.inference(provider="aws.bedrock")
+    extract_converse_request(
+        {
+            "inferenceConfig": {"topK": 0, "seed": 0},
+        },
+        invocation4,
+    )
+    assert invocation4.top_k == 0.0
+    assert invocation4.seed == 0
+
 
 def test_extract_content_block_reasoning() -> None:
     part = extract_content_block(

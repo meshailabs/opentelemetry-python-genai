@@ -32,6 +32,14 @@ def _is_list(val: object) -> TypeGuard[list[Any]]:
     return isinstance(val, list)
 
 
+def _first_not_none(*values: Any) -> Any:
+    """Return the first value that is not None, or None."""
+    for val in values:
+        if val is not None:
+            return val
+    return None
+
+
 _FINISH_REASON_MAP: dict[str, str] = {
     "end_turn": "stop",
     "stop_sequence": "stop",
@@ -181,23 +189,24 @@ def extract_converse_request(
         invocation.top_p = inf_config.get("topP")
         invocation.max_tokens = inf_config.get("maxTokens")
         invocation.stop_sequences = inf_config.get("stopSequences")
-        invocation.top_k = inf_config.get("topK") or inf_config.get("top_k")
+        invocation.top_k = _safe_float(
+            _first_not_none(inf_config.get("topK"), inf_config.get("top_k"))
+        )
         invocation.seed = inf_config.get("seed")
 
     add_fields = kwargs.get("additionalModelRequestFields")
     if _is_dict(add_fields):
         add_inf = add_fields.get("inferenceConfig")
-        invocation.top_k = (
-            add_fields.get("topK")
-            or add_fields.get("top_k")
-            or (
-                (add_inf.get("topK") or add_inf.get("top_k"))
-                if _is_dict(add_inf)
-                else None
-            )
-            or invocation.top_k
+        top_k_val = _first_not_none(
+            add_fields.get("topK"),
+            add_fields.get("top_k"),
+            add_inf.get("topK") if _is_dict(add_inf) else None,
+            add_inf.get("top_k") if _is_dict(add_inf) else None,
+            invocation.top_k,
         )
-        invocation.seed = add_fields.get("seed", invocation.seed)
+        invocation.top_k = _safe_float(top_k_val)
+        if "seed" in add_fields:
+            invocation.seed = add_fields.get("seed")
 
     # system instruction
     raw_system = kwargs.get("system")
@@ -332,77 +341,65 @@ def extract_invoke_model_request(
     if not _is_dict(body):
         return
 
+    # Extract optional nested configs
+    text_gen_config = (
+        body.get("textGenerationConfig")
+        if _is_dict(body.get("textGenerationConfig"))
+        else None
+    )
+    inf_config = (
+        body.get("inferenceConfig")
+        if _is_dict(body.get("inferenceConfig"))
+        else None
+    )
+
     # Temperature
     invocation.temperature = _safe_float(
-        body.get("temperature")
-        or (
-            body.get("textGenerationConfig", {}).get("temperature")
-            if _is_dict(body.get("textGenerationConfig"))
-            else None
-        )
-        or (
-            body.get("inferenceConfig", {}).get("temperature")
-            if _is_dict(body.get("inferenceConfig"))
-            else None
+        _first_not_none(
+            body.get("temperature"),
+            text_gen_config.get("temperature") if text_gen_config else None,
+            inf_config.get("temperature") if inf_config else None,
         )
     )
 
     # Top P
     invocation.top_p = _safe_float(
-        body.get("top_p")
-        or body.get("topP")
-        or body.get("p")
-        or (
-            body.get("textGenerationConfig", {}).get("topP")
-            if _is_dict(body.get("textGenerationConfig"))
-            else None
-        )
-        or (
-            body.get("inferenceConfig", {}).get("top_p")
-            if _is_dict(body.get("inferenceConfig"))
-            else None
+        _first_not_none(
+            body.get("top_p"),
+            body.get("topP"),
+            body.get("p"),
+            text_gen_config.get("topP") if text_gen_config else None,
+            inf_config.get("top_p") if inf_config else None,
         )
     )
 
     # Top K
     invocation.top_k = _safe_float(
-        body.get("top_k")
-        or body.get("topK")
-        or body.get("k")
-        or (
-            body.get("inferenceConfig", {}).get("top_k")
-            if _is_dict(body.get("inferenceConfig"))
-            else None
+        _first_not_none(
+            body.get("top_k"),
+            body.get("topK"),
+            body.get("k"),
+            inf_config.get("top_k") if inf_config else None,
         )
     )
 
     # Max tokens
     invocation.max_tokens = _safe_int(
-        body.get("max_tokens")
-        or body.get("max_tokens_to_sample")
-        or body.get("max_gen_len")
-        or body.get("maxTokens")
-        or (
-            body.get("textGenerationConfig", {}).get("maxTokenCount")
-            if _is_dict(body.get("textGenerationConfig"))
-            else None
-        )
-        or (
-            body.get("inferenceConfig", {}).get("max_new_tokens")
-            if _is_dict(body.get("inferenceConfig"))
-            else None
+        _first_not_none(
+            body.get("max_tokens"),
+            body.get("max_tokens_to_sample"),
+            body.get("max_gen_len"),
+            body.get("maxTokens"),
+            text_gen_config.get("maxTokenCount") if text_gen_config else None,
+            inf_config.get("max_new_tokens") if inf_config else None,
         )
     )
 
     # Stop sequences
-    stop_seqs = (
-        body.get("stop_sequences")
-        or body.get("stopSequences")
-        or (
-            body.get("textGenerationConfig", {}).get("stopSequences")
-            if _is_dict(body.get("textGenerationConfig"))
-            else None
-        )
+    stop_seqs = _first_not_none(
+        body.get("stop_sequences"),
+        body.get("stopSequences"),
+        text_gen_config.get("stopSequences") if text_gen_config else None,
     )
     if _is_list(stop_seqs):
         invocation.stop_sequences = [str(s) for s in stop_seqs]
@@ -532,19 +529,27 @@ def extract_invoke_model_response(
     if _is_dict(usage):
         if invocation.input_tokens is None:
             invocation.input_tokens = _safe_int(
-                usage.get("input_tokens") or usage.get("inputTokens")
+                _first_not_none(
+                    usage.get("input_tokens"), usage.get("inputTokens")
+                )
             )
         if invocation.output_tokens is None:
             invocation.output_tokens = _safe_int(
-                usage.get("output_tokens") or usage.get("outputTokens")
+                _first_not_none(
+                    usage.get("output_tokens"), usage.get("outputTokens")
+                )
             )
         invocation.cache_read_input_tokens = _safe_int(
-            usage.get("cache_read_input_tokens")
-            or usage.get("cacheReadInputTokens")
+            _first_not_none(
+                usage.get("cache_read_input_tokens"),
+                usage.get("cacheReadInputTokens"),
+            )
         )
         invocation.cache_creation_input_tokens = _safe_int(
-            usage.get("cache_creation_input_tokens")
-            or usage.get("cacheWriteInputTokens")
+            _first_not_none(
+                usage.get("cache_creation_input_tokens"),
+                usage.get("cacheWriteInputTokens"),
+            )
         )
 
     if invocation.input_tokens is None and "inputTextTokenCount" in body:

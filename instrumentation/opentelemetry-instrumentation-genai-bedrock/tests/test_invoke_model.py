@@ -14,6 +14,7 @@ from botocore.response import StreamingBody
 from botocore.stub import Stubber
 
 from opentelemetry.instrumentation.genai.bedrock.extractors import (
+    extract_invoke_model_request,
     extract_invoke_model_response,
 )
 from opentelemetry.semconv._incubating.attributes import (
@@ -423,3 +424,27 @@ def test_extract_invoke_model_response_headers(tracer_provider) -> None:
     )
     assert invocation.input_tokens == 15
     assert invocation.output_tokens == 22
+
+
+def test_extract_invoke_model_request_zero_values(tracer_provider) -> None:
+    handler = TelemetryHandler(tracer_provider=tracer_provider)
+    invocation = handler.inference(provider="aws.bedrock")
+    extract_invoke_model_request(
+        {
+            "body": json.dumps(
+                {
+                    "temperature": 0.0,
+                    "top_p": 0.0,
+                    "top_k": 0,
+                    "max_tokens": 0,
+                    "seed": 0,
+                }
+            )
+        },
+        invocation,
+    )
+    assert invocation.temperature == 0.0
+    assert invocation.top_p == 0.0
+    assert invocation.top_k == 0.0
+    assert invocation.max_tokens == 0
+    assert invocation.seed == 0
