@@ -34,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol, cast
 
-from llama_index.core.instrumentation import get_dispatcher
+from llama_index.core import instrumentation
 from llama_index.core.instrumentation.span_handlers import BaseSpanHandler
 
 from opentelemetry.instrumentation.genai.llama_index._handler import (
@@ -76,13 +76,17 @@ class LlamaIndexInstrumentor(BaseInstrumentor):
             or load_completion_hook(),
         )
         span_handler = LlamaIndexSpanHandler(handler)
-        dispatcher = cast(_Dispatcher, get_dispatcher())
+        dispatcher = cast(
+            _Dispatcher, getattr(instrumentation, "get_dispatcher")()
+        )
         dispatcher.add_span_handler(span_handler)
         self._handler = handler
         self._span_handler = span_handler
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        dispatcher = cast(_Dispatcher, get_dispatcher())
+        dispatcher = cast(
+            _Dispatcher, getattr(instrumentation, "get_dispatcher")()
+        )
         if self._span_handler in dispatcher.span_handlers:
             dispatcher.span_handlers.remove(self._span_handler)
         self._span_handler = None
