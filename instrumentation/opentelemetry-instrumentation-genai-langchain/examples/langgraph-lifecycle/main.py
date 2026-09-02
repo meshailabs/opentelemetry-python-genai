@@ -1,16 +1,19 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Generate the LangGraph lifecycle telemetry sample.
+"""LangGraph agent lifecycle telemetry example.
 
 Runs a small human-in-the-loop LangGraph application twice, once until it
-interrupts and once to resume it, under the released LangChain instrumentor,
-and writes every span and log record it produced to
-``langgraph-lifecycle-events.sample.json``.
+interrupts and once to resume it, under the LangChain instrumentor, and writes
+every span and log record it produced to ``sample-output.json`` beside this
+file. Needs no API key and no collector.
 
-Usage::
+Usage, from this directory::
 
-    uv run python docs/design-notes/langgraph_lifecycle_sample.py
+    python main.py
+
+See `README.rst <README.rst>`_ for what the events mean and where they come
+from.
 """
 
 from __future__ import annotations
@@ -35,7 +38,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
     InMemorySpanExporter,
 )
 
-OUTPUT = Path(__file__).with_name("langgraph-lifecycle-events.sample.json")
+OUTPUT = Path(__file__).with_name("sample-output.json")
 
 
 class ExpenseState(TypedDict, total=False):
