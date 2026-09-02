@@ -1,4 +1,4 @@
-OpenTelemetry LangGraph Agent Lifecycle Example
+OpenTelemetry langgraph agent lifecycle example
 ===============================================
 
 This is an example of the agent lifecycle telemetry the instrumentation
