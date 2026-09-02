@@ -148,15 +148,13 @@ class TestEmitEventMatchesPR507(unittest.TestCase):
     def test_local_emit_event_matches_the_stored_pr507_source(self):
         from pathlib import Path
 
-        repo_root = Path(__file__).resolve().parents[3]
-        stored = repo_root / "docs/design-notes/pr507-emit_event.py.txt"
+        tests_dir = Path(__file__).resolve().parent
+        stored = tests_dir / "fixtures" / "pr507_emit_event.py.txt"
         if not stored.is_file():
             self.skipTest("PR #507 reference source is not packaged")
 
         source = (
-            repo_root
-            / "util/opentelemetry-util-genai/src/opentelemetry/util/genai"
-            / "_invocation.py"
+            tests_dir.parent / "src/opentelemetry/util/genai/_invocation.py"
         ).read_text()
         for fragment in stored.read_text().split("\n\n", 1):
             assert fragment.strip("\n") in source
