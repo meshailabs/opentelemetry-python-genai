@@ -11,6 +11,7 @@ own return values.
 from __future__ import annotations
 
 import asyncio
+import sys
 import threading
 from typing import Any, TypedDict
 
@@ -18,6 +19,11 @@ import pytest
 
 from opentelemetry.instrumentation.genai.langchain.lifecycle import (
     _wrap_checkpointer,
+)
+
+_requires_py311_async_context = pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="LangGraph async context propagation requires Python 3.11+",
 )
 
 InMemorySaver = pytest.importorskip(
@@ -193,6 +199,7 @@ def test_plain_graph_run_emits_no_lifecycle_events(
         assert _events(log_exporter, event_name) == []
 
 
+@_requires_py311_async_context
 def test_async_interrupt_and_resume_emit_lifecycle_events(
     start_instrumentation,
     log_exporter,
@@ -396,6 +403,7 @@ class _WorkerThreadSaver(_DelegatingSaver):
             )
 
 
+@_requires_py311_async_context
 @pytest.mark.parametrize(
     "saver_factory", [_DelegatingSaver, _WorkerThreadSaver]
 )
