@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
@@ -67,6 +66,10 @@ from opentelemetry.util.genai.types import (
     OutputMessage,
     RetrievalDocument,
     Role,
+)
+from opentelemetry.util.genai.utils import (
+    object_to_any_value,
+    tool_arguments_to_any_value,
 )
 
 SUPPORTED_RAPI_RESPONSE_HEADERS = ("x-ms-served-model",)
@@ -173,12 +176,10 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         self,
         telemetry_handler: TelemetryHandler,
         *,
-        _attach_to_context: bool = True,
         invocation_manager: _InvocationManager | None = None,
     ) -> None:
         super().__init__()
         self._telemetry_handler = telemetry_handler
-        self._attach_to_context = _attach_to_context
         self._invocation_manager = (
             invocation_manager
             if invocation_manager is not None
@@ -228,7 +229,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                 name=workflow_name_override or workflow_name,
                 context=parent_context,
                 conversation_id=conversation_id,
-                _attach_to_context=self._attach_to_context,
+                _attach_to_context=False,
             )
             if capture_content:
                 workflow.input_messages = make_input_message(inputs)
@@ -263,7 +264,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                         agent_name=suggested_agent_name,
                         context=parent_context,
                         conversation_id=conversation_id,
-                        _attach_to_context=self._attach_to_context,
+                        _attach_to_context=False,
                     )
                     if capture_content:
                         agent.input_messages = make_input_message(inputs)
@@ -289,7 +290,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
                     agent_name=None,
                     context=parent_context,
                     conversation_id=conversation_id,
-                    _attach_to_context=self._attach_to_context,
+                    _attach_to_context=False,
                 )
                 agent.input_messages = make_input_message(inputs)
                 self._invocation_manager.add_invocation_state(
@@ -452,7 +453,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             request_model=request_model,
             context=parent_context,
             conversation_id=_conversation_id(metadata),
-            _attach_to_context=self._attach_to_context,
+            _attach_to_context=False,
         )
         llm_invocation.input_messages = input_messages
         llm_invocation.top_p = top_p
@@ -721,14 +722,6 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             name = serialized.get("name") or "unknown"
             description = serialized.get("description")
 
-        arguments: Any
-        if inputs is not None:
-            arguments = inputs
-        else:
-            try:
-                arguments = json.loads(input_str)
-            except (json.JSONDecodeError, ValueError):
-                arguments = input_str
         agent_name, _ = self._find_agent_context(parent_run_id)
         parent_context = self._invocation_manager.get_parent_context(
             parent_run_id
@@ -739,10 +732,13 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             tool_type="function",
             agent_name=agent_name,
             context=parent_context,
-            _attach_to_context=self._attach_to_context,
+            _attach_to_context=False,
         )
         tool_invocation.tool_description = description
-        tool_invocation.arguments = arguments
+        if tool_invocation.should_capture_content:
+            tool_invocation.arguments = tool_arguments_to_any_value(
+                inputs if inputs is not None else input_str
+            )
         tool_call_id = kwargs.get("tool_call_id")
         if tool_call_id:
             tool_invocation.tool_call_id = tool_call_id
@@ -764,7 +760,10 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
         end_tool_call_id = getattr(output, "tool_call_id", None)
         if end_tool_call_id and not tool_invocation.tool_call_id:
             tool_invocation.tool_call_id = end_tool_call_id
-        tool_invocation.tool_result = getattr(output, "content", None)
+        if tool_invocation.should_capture_content:
+            tool_invocation.tool_result = object_to_any_value(
+                getattr(output, "content", output)
+            )
         tool_invocation.stop()
         self._invocation_manager.delete_invocation_state(run_id=run_id)
 
@@ -803,7 +802,7 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             provider=provider,
             request_model=request_model,
             context=parent_context,
-            _attach_to_context=self._attach_to_context,
+            _attach_to_context=False,
         )
         retrieval.query_text = query
         self._invocation_manager.add_invocation_state(

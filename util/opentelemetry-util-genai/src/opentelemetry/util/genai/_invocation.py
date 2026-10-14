@@ -56,6 +56,7 @@ from opentelemetry.util.genai.utils import (
     ContentCapturingMode,
     gen_ai_json_dumps,
     get_content_capturing_mode,
+    object_to_any_value,
 )
 from opentelemetry.util.types import AttributeValue
 
@@ -154,6 +155,7 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
                     context=ctx,
                 )
             self._span_context: Context = ctx
+            self._attach_to_context = _attach_to_context
             self._context_token: ContextToken | None = (
                 attach(self._span_context) if _attach_to_context else None
             )
@@ -161,6 +163,8 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             ctx = get_current() if context is None else context
             self.span = get_current_span(context=ctx)
             self._span_context = ctx
+            # Never attached, so never treated as suspended by the stream wrappers.
+            self._attach_to_context = False
             self._context_token = None
         self._monotonic_start_s: float = timeit.default_timer()
         # Streaming state, set when the invocation is handed to a stream
@@ -192,6 +196,19 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
     def context(self) -> Context:
         """The OpenTelemetry Context containing this invocation's span."""
         return self._span_context
+
+    @property
+    def _suspended(self) -> bool:
+        """True when this invocation attached itself to the context and ``suspend`` has since run.
+
+        Describes the original attachment only: it stays true during a
+        temporary ``activate`` and after the invocation has finished. The
+        stream wrappers activate such an invocation around each read. An
+        invocation that is still attached is left alone: its original
+        attachment is outstanding, and activating it around the read that
+        finishes it would reinstate the ended span after ``stop`` detached it.
+        """
+        return self._attach_to_context and self._context_token is None
 
     def suspend(self) -> None:
         """Restore the context that was current before this invocation started.
@@ -390,6 +407,20 @@ class GenAIInvocation(AbstractContextManager["GenAIInvocation"]):
             self.stop()
 
 
+def _json_dumps_unless_str(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return gen_ai_json_dumps(value, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        pass
+    # Callers may set objects (e.g. models) that weren't converted to AnyValue.
+    converted = object_to_any_value(value)
+    if converted is None or isinstance(converted, str):
+        return converted
+    return gen_ai_json_dumps(converted)
+
+
 def get_content_attributes(
     *,
     input_messages: Sequence[InputMessage],
@@ -459,7 +490,7 @@ def get_content_attributes(
     result = {key: value for key, value in optional_attrs if value is not None}
     if prompt_variables:
         for k, v in prompt_variables.items():
-            result[f"{_GEN_AI_PROMPT_VARIABLE_PREFIX}{k}"] = (
-                v if isinstance(v, str) else gen_ai_json_dumps(v)
-            )
+            serialized = _json_dumps_unless_str(v)
+            if serialized is not None:
+                result[f"{_GEN_AI_PROMPT_VARIABLE_PREFIX}{k}"] = serialized
     return result
